@@ -1,13 +1,15 @@
 import React, { useEffect, useMemo, useState } from "react";
-import {
-  Alert, KeyboardAvoidingView, Platform, SafeAreaView, ScrollView, Text, TextInput, View, Pressable, StyleSheet,
-} from "react-native";
+import { Alert, KeyboardAvoidingView, Platform, SafeAreaView, ScrollView, Text, TextInput, View, Pressable, StyleSheet } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { LinearGradient } from "expo-linear-gradient";
-import * as Haptics from "expo-haptics";
+import * as FileSystem from "expo-file-system";
+import * as Sharing from "expo-sharing";
+import * as MailComposer from "expo-mail-composer";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { s } from "../../styles/shared";
 import { sanitizeNumber as toNumber } from "../../components/ui/currency";
+
+type NameValue = { nome: string; valor: string };
 
 function hojeKey() {
   const d = new Date();
@@ -16,103 +18,112 @@ function hojeKey() {
 const STORAGE_KEY = "fechamento:" + hojeKey();
 const BRL = (n: number) => n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
-type NameValue = { nome: string; valor: string };
+const DENOMS = [
+  { key: "2.50", label: "2,50", value: 2.5 },
+  { key: "5.00", label: "5,00", value: 5 },
+  { key: "10.00", label: "10,00", value: 10 },
+  { key: "20.00", label: "20,00", value: 20 },
+] as const;
 
 const blank = () => ({
+  // ENTRADA
   entradaDinheiro: [""],
+  entradaFixos: { Moeda: "", Tarifa: "", "Bolão": "", Mkt: "", Telesena: "" } as Record<string, string>,
   entradaRecebimentos: [{ nome: "", valor: "" }] as NameValue[],
-  entradaFixos: { Moeda: "", Tarifa: "", "Bolão": "", Mkt: "", Telesena: "" },
   entradaDenomQtds: { "2.50": 0, "5.00": 0, "10.00": 0, "20.00": 0 } as Record<"2.50"|"5.00"|"10.00"|"20.00", number>,
 
+  // SAÍDA
   saidaRetiradas: [""],
+  saidaFixos: { Moeda: "", "Bolão": "", Mkt: "", Troca: "", Raspinha: "" } as Record<string, string>, // Raspinha fixo único
   saidaPix: [{ nome: "", valor: "" }] as NameValue[],
   saidaFiados: [{ nome: "", valor: "" }] as NameValue[],
   saidaOutros: [{ nome: "", valor: "" }] as NameValue[],
-  saidaFixos: { Moeda: "", "Bolão": "", Mkt: "", Troca: "", Raspinha: "" },
 
+  // USER (preenchido no load)
   userInfo: null as null | { user: string; nome: string; email: string },
 });
 
-function Section({ title, right, children }: any) {
-  return (
-    <View style={{ marginBottom: 16 }}>
-      <View style={styles.sectionHeader}>
-        <Text style={styles.sectionTitle}>{title}</Text>
-        {right}
-      </View>
-      {children}
-    </View>
-  );
+function buildCsv(data: any) {
+  const linhas: string[] = [];
+  const dia = hojeKey();
+  linhas.push(`Fechamento de Caixa;${dia}`);
+  if (data?.userInfo) {
+    linhas.push(`Caixa;${data.userInfo.nome} (${data.userInfo.user})`);
+    linhas.push(`Email;${data.userInfo.email}`);
+  }
+  linhas.push("");
+
+  // ENTRADA
+  linhas.push("ENTRADA");
+  (data.entradaDinheiro || []).forEach((v: string, i: number) => linhas.push(`Dinheiro ${i + 1};${toNumber(v).toFixed(2).replace(".", ",")}`));
+  ["Moeda", "Tarifa", "Bolão", "Mkt", "Telesena"].forEach((k) => {
+    const v = (data.entradaFixos || {})[k] || "";
+    linhas.push(`${k};${toNumber(v).toFixed(2).replace(".", ",")}`);
+  });
+  const entradaDenomQtds = data.entradaDenomQtds || {};
+  DENOMS.forEach((d) => {
+    const qtd = Number(entradaDenomQtds[d.key] || 0);
+    const total = (qtd * d.value).toFixed(2).replace(".", ",");
+    linhas.push(`Raspinha ${d.label} (qtd);${qtd}`);
+    linhas.push(`Raspinha ${d.label} (total);${total}`);
+  });
+  (data.entradaRecebimentos || []).forEach((it: any, i: number) => {
+    const label = it?.nome ? `Recebimento ${i + 1} - ${it.nome}` : `Recebimento ${i + 1}`;
+    linhas.push(`${label};${toNumber(it?.valor).toFixed(2).replace(".", ",")}`);
+  });
+
+  // SAÍDA
+  linhas.push("");
+  linhas.push("SAÍDA");
+  (data.saidaRetiradas || []).forEach((v: string, i: number) => linhas.push(`Retirada ${i + 1};${toNumber(v).toFixed(2).replace(".", ",")}`));
+  ["Moeda", "Bolão", "Mkt", "Troca", "Raspinha"].forEach((k) => {
+    const v = (data.saidaFixos || {})[k] || "";
+    linhas.push(`${k};${toNumber(v).toFixed(2).replace(".", ",")}`);
+  });
+  (data.saidaPix || []).forEach((it: any, i: number) => {
+    const label = it?.nome ? `Pix ${i + 1} - ${it.nome}` : `Pix ${i + 1}`;
+    linhas.push(`${label};${toNumber(it?.valor).toFixed(2).replace(".", ",")}`);
+  });
+  (data.saidaFiados || []).forEach((it: any, i: number) => {
+    const label = it?.nome ? `Fiado ${i + 1} - ${it.nome}` : `Fiado ${i + 1}`;
+    linhas.push(`${label};${toNumber(it?.valor).toFixed(2).replace(".", ",")}`);
+  });
+  (data.saidaOutros || []).forEach((it: any, i: number) => {
+    const label = it?.nome ? `Outros ${i + 1} - ${it.nome}` : `Outros ${i + 1}`;
+    linhas.push(`${label};${toNumber(it?.valor).toFixed(2).replace(".", ",")}`);
+  });
+
+  // Totais
+  const somaArr = (arr?: any[]) => (Array.isArray(arr) ? arr.reduce((a, v) => a + toNumber(v), 0) : 0);
+  const somaObj = (obj?: Record<string, any>) => obj ? Object.values(obj).reduce((a, v) => a + toNumber(v), 0) : 0;
+  const sumNameValue = (arr?: any[]) => Array.isArray(arr) ? arr.reduce((a, it) => a + toNumber(it?.valor), 0) : 0;
+  const somaDenoms = DENOMS.reduce((acc, d) => acc + (Number((data?.entradaDenomQtds || {})[d.key]) || 0) * d.value, 0);
+  const entrada = somaArr(data?.entradaDinheiro) + somaObj(data?.entradaFixos) + sumNameValue(data?.entradaRecebimentos) + somaDenoms;
+  const saida = somaArr(data?.saidaRetiradas) + somaObj(data?.saidaFixos) + sumNameValue(data?.saidaPix) + sumNameValue(data?.saidaFiados) + sumNameValue(data?.saidaOutros);
+  const resultado = entrada - saida;
+
+  linhas.push("");
+  linhas.push(`Total Entrada;${entrada.toFixed(2).replace(".", ",")}`);
+  linhas.push(`Total Saída;${saida.toFixed(2).replace(".", ",")}`);
+  linhas.push(`RESULTADO;${resultado.toFixed(2).replace(".", ",")}`);
+
+  return linhas.join("\n");
 }
 
-function MoneyInput({ label, value, onChangeText }: { label?: string; value: string; onChangeText: (t: string) => void; }) {
-  return (
-    <View style={{ marginBottom: 10 }}>
-      {label ? <Text style={s.fieldLabel}>{label}</Text> : null}
-      <TextInput
-        value={value}
-        onChangeText={(t) => onChangeText(t.replace(/[^\d,.-]/g, ""))}
-        keyboardType="numeric"
-        placeholder="R$ 0,00"
-        placeholderTextColor="#8B93AF"
-        style={styles.input}
-      />
-    </View>
-  );
+function Label({ children }: { children: React.ReactNode }) {
+  return <Text style={[styles.fieldLabel, (s as any)?.fieldLabel]}>{children}</Text>;
 }
 
-function NameValueRow({ item, onChange, onRemove }: { item: NameValue; onChange: (it: NameValue) => void; onRemove?: () => void; }) {
+function FieldMoney({ value, onChange, placeholder }: { value: string; onChange: (t: string) => void; placeholder?: string }) {
   return (
-    <View style={styles.rowNV}>
-      <View style={{ flex: 1 }}>
-        <Text style={s.fieldLabel}>Nome</Text>
-        <TextInput
-          style={[styles.input]}
-          placeholder="Ex.: Cliente"
-          placeholderTextColor="#8B93AF"
-          value={item.nome}
-          onChangeText={(t) => onChange({ ...item, nome: t.replace(/\d/g, "") })}
-        />
-      </View>
-      <View style={{ width: 120 }}>
-        <Text style={s.fieldLabel}>Valor</Text>
-        <TextInput
-          style={[styles.input]}
-          placeholder="R$ 0,00"
-          placeholderTextColor="#8B93AF"
-          value={item.valor}
-          onChangeText={(t) => onChange({ ...item, valor: t.replace(/[^\d,.-]/g, "") })}
-          keyboardType="numeric"
-        />
-      </View>
-      {onRemove ? (
-        <Pressable onPress={async () => { await Haptics.selectionAsync(); onRemove(); }} style={styles.iconBtn}>
-          <Text style={styles.iconBtnText}>−</Text>
-        </Pressable>
-      ) : null}
-    </View>
-  );
-}
-
-function QuickCounter({ label, qty, onInc, onDec, onAdd }:{ label: string; qty: number; onInc:()=>void; onDec:()=>void; onAdd?:(n:number)=>void; }) {
-  const [tmp, setTmp] = useState("");
-  return (
-    <View style={styles.counter}>
-      <Text style={s.fieldLabel}>{label}</Text>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-        <Pressable onPress={async () => { await Haptics.selectionAsync(); onDec(); }}><Text style={styles.counterOp}>−</Text></Pressable>
-        <Text style={styles.counterQty}>{qty}</Text>
-        <Pressable onPress={async () => { await Haptics.selectionAsync(); onInc(); }}><Text style={styles.counterOp}>+</Text></Pressable>
-      </View>
-      {onAdd ? (
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-          <TextInput value={tmp} onChangeText={setTmp} placeholder="qtd" keyboardType="numeric" placeholderTextColor="#8B93AF" style={[styles.input, { width: 70, paddingVertical: 6 }]} />
-          <Pressable onPress={async () => { const n = parseInt(tmp || "0", 10); if (!isNaN(n) && n > 0) { await Haptics.selectionAsync(); onAdd(n); setTmp(""); } }} style={styles.iconBtn}>
-            <Text style={styles.iconBtnText}>+</Text>
-          </Pressable>
-        </View>
-      ) : null}
-    </View>
+    <TextInput
+      value={value}
+      onChangeText={onChange}
+      placeholder={placeholder || "0,00"}
+      keyboardType="numeric"
+      style={styles.input}
+      inputMode="decimal"
+    />
   );
 }
 
@@ -126,13 +137,11 @@ export default function FechamentoScreen() {
     })();
   }, []);
 
+  // helpers
   const somaArr = (arr?: string[]) => (Array.isArray(arr) ? arr.reduce((a, v) => a + toNumber(v), 0) : 0);
   const somaNV = (arr?: NameValue[]) => (Array.isArray(arr) ? arr.reduce((a, it) => a + toNumber(it?.valor), 0) : 0);
   const somaObj = (obj?: Record<string, string>) => (obj ? Object.values(obj).reduce((a, v) => a + toNumber(v), 0) : 0);
-  const somaDen = () => {
-    const q = state.entradaDenomQtds;
-    return (q["2.50"]||0)*2.5 + (q["5.00"]||0)*5 + (q["10.00"]||0)*10 + (q["20.00"]||0)*20;
-  };
+  const somaDen = () => DENOMS.reduce((acc, d) => acc + (Number(state.entradaDenomQtds[d.key]) || 0) * d.value, 0);
 
   const totals = useMemo(() => {
     const entrada = somaArr(state.entradaDinheiro) + somaObj(state.entradaFixos) + somaNV(state.entradaRecebimentos) + somaDen();
@@ -140,180 +149,264 @@ export default function FechamentoScreen() {
     return { entrada, saida, resultado: entrada - saida };
   }, [state]);
 
+  // ações
   async function salvarHoje() {
-    try { await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(state)); Alert.alert("Salvo 💾", "Fechamento do dia salvo no dispositivo."); }
-    catch { Alert.alert("Erro", "Não foi possível salvar."); }
+    try {
+      const dataToSave = { ...state };
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(dataToSave));
+
+      const csv = buildCsv(dataToSave);
+      const fileName = `fechamento_${hojeKey()}.csv`;
+
+      if (Platform.OS === "web") {
+        // baixa CSV + abre mailto (sem anexo no web)
+        const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        const assunto = `Fechamento de caixa - ${hojeKey()}`;
+        const corpo = `Segue o relatório em CSV (baixado no seu dispositivo).%0D%0A%0D%0AResumo:%0D%0A${csv.split("\n").slice(0, 30).join("%0D%0A")}`;
+        window.location.href = `mailto:${state.userInfo?.email || ""}?subject=${encodeURIComponent(assunto)}&body=${corpo}`;
+
+        Alert.alert("Salvo ✅", "Dados do dia salvos e CSV baixado.");
+      } else {
+        // mobile: anexa e tenta enviar por e‑mail; fallback share
+        const fileUri = FileSystem.cacheDirectory + fileName;
+        await FileSystem.writeAsStringAsync(fileUri, csv, { encoding: FileSystem.EncodingType.UTF8 });
+
+        const assunto = `Fechamento de caixa - ${hojeKey()}`;
+        const isAvailable = await MailComposer.isAvailableAsync();
+        if (isAvailable) {
+          await MailComposer.composeAsync({
+            recipients: [state.userInfo?.email || ""],
+            subject: assunto,
+            body: "Segue o relatório de fechamento do dia em anexo.\n\n",
+            isHtml: false,
+            attachments: [fileUri],
+          });
+        } else if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(fileUri);
+        } else {
+          Alert.alert("Ops", "Não foi possível compartilhar o CSV neste dispositivo.");
+        }
+
+        Alert.alert("Salvo ✅", "Dados do dia salvos. CSV gerado e envio iniciado.");
+      }
+    } catch (e) {
+      Alert.alert("Erro", "Não foi possível salvar ou enviar o CSV.");
+    }
   }
+
   function limparTudo() { setState(blank()); }
 
+  // UI helpers
+  const AddRemove = ({ onAdd, onRemove }: { onAdd: () => void; onRemove: () => void }) => (
+    <View style={{ flexDirection: "row", gap: 8 }}>
+      <Pressable onPress={onRemove} style={styles.circleBtn}><Text style={styles.circleBtnText}>−</Text></Pressable>
+      <Pressable onPress={onAdd} style={styles.circleBtn}><Text style={styles.circleBtnText}>+</Text></Pressable>
+    </View>
+  );
+
+  const renderNameValue = (arr: NameValue[], setArr: (fn: any) => void, placeholderName: string) => (
+    <View>
+      {arr.map((it, idx) => (
+        <View key={idx} style={styles.rowNV}>
+          <View style={{ flex: 1 }}>
+            <Label>{placeholderName} {idx + 1} — Nome</Label>
+            <TextInput
+              value={it.nome}
+              onChangeText={(t) => {
+                const next = arr.slice();
+                next[idx] = { ...it, nome: t.replace(/[\d]/g, "") };
+                setArr(next);
+              }}
+              placeholder="Nome"
+              style={styles.input}
+            />
+          </View>
+          <View style={{ width: 130 }}>
+            <Label>Valor</Label>
+            <TextInput
+              value={it.valor}
+              onChangeText={(t) => {
+                const next = arr.slice();
+                next[idx] = { ...it, valor: t.replace(/[^\d,.-]/g, "") };
+                setArr(next);
+              }}
+              placeholder="0,00"
+              keyboardType="numeric"
+              inputMode="decimal"
+              style={styles.input}
+            />
+          </View>
+          <Pressable onPress={() => setArr(arr.filter((_, i) => i !== idx))} style={styles.circleBtnSmall}><Text style={styles.circleBtnText}>−</Text></Pressable>
+        </View>
+      ))}
+      <Pressable onPress={() => setArr([...arr, { nome: "", valor: "" }])} style={[s.btn, { alignSelf: "flex-start" }]}>
+        <Text style={{ color: "#655ad8", fontWeight: "800" }}>+ adicionar</Text>
+      </Pressable>
+    </View>
+  );
+
+  // RENDER
   return (
     <SafeAreaView style={s.safe}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-        <ScrollView contentContainerStyle={[s.container, { paddingBottom: 40 }]}>
+        <ScrollView contentContainerStyle={[s.container, { paddingBottom: 64 }]}>
           <View style={{ borderRadius: 22, overflow: "hidden", marginBottom: 8 }}>
             <LinearGradient colors={["#E9EDFF", "#FFF7F7"]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={{ padding: 16 }}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
                 <Ionicons name="sparkles-outline" size={22} color="#7C83FD" />
-                <Text style={{ fontSize: 18, fontWeight: "800", color: "#27303F" }}>Olá, {state.userInfo?.nome ?? "Caixa"} ✨</Text>
+                <Text style={{ fontSize: 18, fontWeight: "800", color: "#27303F" }}>Fechamento de Caixa — {hojeKey()}</Text>
               </View>
-              <Text style={{ color: "#6B7280", marginTop: 6 }}>Vamos fechar seu dia? 💖</Text>
+              {!!state.userInfo?.nome && <Text style={{ color: "#6B7280", marginTop: 6 }}>Caixa: {state.userInfo.nome}</Text>}
             </LinearGradient>
           </View>
 
-          <Text style={s.titulo}>Fechamento de Caixa ({hojeKey()})</Text>
-
           {/* ENTRADA */}
           <View style={s.card}>
-            <Text style={{ color: "#111827", fontWeight: "800", fontSize: 18, marginBottom: 8 }}>Entrada 💸</Text>
+            <Text style={styles.sectionTitle}>Entrada</Text>
 
-            <Section
-              title="Dinheiro"
-              right={<Pressable onPress={async () => { await Haptics.selectionAsync(); setState((p) => ({ ...p, entradaDinheiro: [...p.entradaDinheiro, ""] })); }} style={styles.iconBtn}><Text style={styles.iconBtnText}>+</Text></Pressable>}
-            >
+            {/* 1) Dinheiro (dinâmico) */}
+            <View style={{ marginBottom: 12 }}>
+              <View style={styles.headerRow}>
+                <Label>Dinheiro</Label>
+                <AddRemove
+                  onAdd={() => setState({ ...state, entradaDinheiro: [...state.entradaDinheiro, ""] })}
+                  onRemove={() => setState({ ...state, entradaDinheiro: state.entradaDinheiro.slice(0, -1) })}
+                />
+              </View>
               {state.entradaDinheiro.map((v, i) => (
-                <View key={i} style={styles.rowNV}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={s.fieldLabel}>Valor</Text>
-                    <TextInput
-                      style={[styles.input]}
-                      placeholder="R$ 0,00" placeholderTextColor="#8B93AF" value={v}
-                      onChangeText={(t) => setState((p) => { const arr = [...p.entradaDinheiro]; arr[i] = t.replace(/[^\d,.-]/g, ""); return { ...p, entradaDinheiro: arr }; })}
-                      keyboardType="numeric"
-                    />
-                  </View>
-                  {state.entradaDinheiro.length > 1 && (
-                    <Pressable onPress={async () => { await Haptics.selectionAsync(); setState((p) => ({ ...p, entradaDinheiro: p.entradaDinheiro.filter((_, ix) => ix !== i) })); }} style={styles.iconBtn}>
-                      <Text style={styles.iconBtnText}>−</Text>
-                    </Pressable>
-                  )}
+                <View key={i} style={{ marginBottom: 8 }}>
+                  <FieldMoney value={v} onChange={(t) => {
+                    const next = state.entradaDinheiro.slice();
+                    next[i] = t.replace(/[^\d,.-]/g, "");
+                    setState({ ...state, entradaDinheiro: next });
+                  }} placeholder={`Dinheiro ${i + 1}`} />
                 </View>
               ))}
-            </Section>
+            </View>
 
-            {["Moeda", "Tarifa", "Bolão", "Mkt"].map((k) => (
-              <MoneyInput key={k} label={k} value={state.entradaFixos[k as keyof typeof state.entradaFixos] || ""} onChangeText={(t) => setState((p) => ({ ...p, entradaFixos: { ...p.entradaFixos, [k]: t } }))} />
+            {/* 2-5) Fixos: Moeda, Tarifa, Bolão, Mkt */}
+            {["Moeda","Tarifa","Bolão","Mkt"].map((k) => (
+              <View key={k} style={{ marginBottom: 12 }}>
+                <Label>{k}</Label>
+                <FieldMoney value={state.entradaFixos[k]} onChange={(t)=> setState({ ...state, entradaFixos: { ...state.entradaFixos, [k]: t.replace(/[^\d,.-]/g, "") } })} />
+              </View>
             ))}
 
-            <Section
-              title="Recebimento"
-              right={<Pressable onPress={async () => { await Haptics.selectionAsync(); setState((p) => ({ ...p, entradaRecebimentos: [...p.entradaRecebimentos, { nome: "", valor: "" }] })); }} style={styles.iconBtn}><Text style={styles.iconBtnText}>+</Text></Pressable>}
-            >
-              {state.entradaRecebimentos.map((it, i) => (
-                <NameValueRow
-                  key={i}
-                  item={it}
-                  onChange={(novo) => setState((p) => { const arr = [...p.entradaRecebimentos]; arr[i] = novo; return { ...p, entradaRecebimentos: arr }; })}
-                  onRemove={state.entradaRecebimentos.length > 1 ? async () => { await Haptics.selectionAsync(); setState((p) => ({ ...p, entradaRecebimentos: p.entradaRecebimentos.filter((_, ix) => ix !== i) })); } : undefined}
-                />
-              ))}
-            </Section>
-
-            <MoneyInput label="Telesena" value={state.entradaFixos["Telesena"] || ""} onChangeText={(t) => setState((p) => ({ ...p, entradaFixos: { ...p.entradaFixos, Telesena: t } }))} />
-
-            <Text style={s.fieldLabel}>Raspinha</Text>
-            <QuickCounter label="2,50" qty={state.entradaDenomQtds["2.50"]} onInc={() => setState((p)=>({ ...p, entradaDenomQtds:{...p.entradaDenomQtds,"2.50":p.entradaDenomQtds["2.50"]+1} }))} onDec={()=>setState((p)=>({ ...p, entradaDenomQtds:{...p.entradaDenomQtds,"2.50":Math.max(0,p.entradaDenomQtds["2.50"]-1)} }))} onAdd={(n)=>setState((p)=>({ ...p, entradaDenomQtds:{...p.entradaDenomQtds,"2.50":p.entradaDenomQtds["2.50"]+n} }))} />
-            <QuickCounter label="5,00"  qty={state.entradaDenomQtds["5.00"]} onInc={() => setState((p)=>({ ...p, entradaDenomQtds:{...p.entradaDenomQtds,"5.00":p.entradaDenomQtds["5.00"]+1} }))} onDec={()=>setState((p)=>({ ...p, entradaDenomQtds:{...p.entradaDenomQtds,"5.00":Math.max(0,p.entradaDenomQtds["5.00"]-1)} }))} onAdd={(n)=>setState((p)=>({ ...p, entradaDenomQtds:{...p.entradaDenomQtds,"5.00":p.entradaDenomQtds["5.00"]+n} }))} />
-            <QuickCounter label="10,00" qty={state.entradaDenomQtds["10.00"]} onInc={() => setState((p)=>({ ...p, entradaDenomQtds:{...p.entradaDenomQtds,"10.00":p.entradaDenomQtds["10.00"]+1} }))} onDec={()=>setState((p)=>({ ...p, entradaDenomQtds:{...p.entradaDenomQtds,"10.00":Math.max(0,p.entradaDenomQtds["10.00"]-1)} }))} onAdd={(n)=>setState((p)=>({ ...p, entradaDenomQtds:{...p.entradaDenomQtds,"10.00":p.entradaDenomQtds["10.00"]+n} }))} />
-            <QuickCounter label="20,00" qty={state.entradaDenomQtds["20.00"]} onInc={() => setState((p)=>({ ...p, entradaDenomQtds:{...p.entradaDenomQtds,"20.00":p.entradaDenomQtds["20.00"]+1} }))} onDec={()=>setState((p)=>({ ...p, entradaDenomQtds:{...p.entradaDenomQtds,"20.00":Math.max(0,p.entradaDenomQtds["20.00"]-1)} }))} onAdd={(n)=>setState((p)=>({ ...p, entradaDenomQtds:{...p.entradaDenomQtds,"20.00":p.entradaDenomQtds["20.00"]+n} }))} />
-
-            <View style={{ marginTop: 8, alignItems: "flex-end" }}>
-              <Text style={{ color: "#111827", fontWeight: "800" }}>Total Entrada: {BRL(totals.entrada)}</Text>
+            {/* 6) Recebimento (dinâmico Nome+Valor) */}
+            <View style={{ marginBottom: 12 }}>
+              <View style={styles.headerRow}><Label>Recebimento</Label></View>
+              {renderNameValue(state.entradaRecebimentos, (next:any)=>setState({ ...state, entradaRecebimentos: next }), "Recebimento")}
             </View>
+
+            {/* 7) Telesena (fixo) */}
+            <View style={{ marginBottom: 12 }}>
+              <Label>Telesena</Label>
+              <FieldMoney value={state.entradaFixos["Telesena"]} onChange={(t)=> setState({ ...state, entradaFixos: { ...state.entradaFixos, Telesena: t.replace(/[^\d,.-]/g, "") } })} />
+            </View>
+
+            {/* 8) Raspinha (contadores 2,50/5,00/10,00/20,00) */}
+            <View style={{ marginBottom: 8 }}>
+              <Label>Raspinha</Label>
+              {DENOMS.map((d) => (
+                <View key={d.key} style={styles.counter}>
+                  <Text style={{ color: "#374151", fontWeight: "700" }}>{d.label}</Text>
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+                    <Pressable onPress={() => setState({ ...state, entradaDenomQtds: { ...state.entradaDenomQtds, [d.key]: Math.max(0, (state.entradaDenomQtds[d.key]||0)-1) } })} style={styles.circleBtn}><Text style={styles.circleBtnText}>−</Text></Pressable>
+                    <Text style={styles.counterQty}>{state.entradaDenomQtds[d.key]||0}</Text>
+                    <Pressable onPress={() => setState({ ...state, entradaDenomQtds: { ...state.entradaDenomQtds, [d.key]: (state.entradaDenomQtds[d.key]||0)+1 } })} style={styles.circleBtn}><Text style={styles.circleBtnText}>+</Text></Pressable>
+                  </View>
+                </View>
+              ))}
+            </View>
+
+            {/* Total Entrada (direita) */}
+            <View style={styles.totalRow}><Text style={styles.totalLabel}>Total Entrada</Text><Text style={styles.totalValue}>{BRL(totals.entrada)}</Text></View>
           </View>
 
           {/* SAÍDA */}
           <View style={s.card}>
-            <Text style={{ color: "#111827", fontWeight: "800", fontSize: 18, marginBottom: 8 }}>Saída 📤</Text>
+            <Text style={styles.sectionTitle}>Saída</Text>
 
-            <Section
-              title="Retirada"
-              right={<Pressable onPress={async () => { await Haptics.selectionAsync(); setState((p) => ({ ...p, saidaRetiradas: [...p.saidaRetiradas, ""] })); }} style={styles.iconBtn}><Text style={styles.iconBtnText}>+</Text></Pressable>}
-            >
+            {/* 1) Retirada (dinâmico) */}
+            <View style={{ marginBottom: 12 }}>
+              <View style={styles.headerRow}>
+                <Label>Retirada</Label>
+                <AddRemove
+                  onAdd={() => setState({ ...state, saidaRetiradas: [...state.saidaRetiradas, ""] })}
+                  onRemove={() => setState({ ...state, saidaRetiradas: state.saidaRetiradas.slice(0, -1) })}
+                />
+              </View>
               {state.saidaRetiradas.map((v, i) => (
-                <View key={i} style={styles.rowNV}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={s.fieldLabel}>Valor</Text>
-                    <TextInput
-                      style={[styles.input]}
-                      placeholder="R$ 0,00" placeholderTextColor="#8B93AF" value={v}
-                      onChangeText={(t) => setState((p) => { const arr = [...p.saidaRetiradas]; arr[i] = t.replace(/[^\d,.-]/g, ""); return { ...p, saidaRetiradas: arr }; })}
-                      keyboardType="numeric"
-                    />
-                  </View>
-                  {state.saidaRetiradas.length > 1 && (
-                    <Pressable onPress={async () => { await Haptics.selectionAsync(); setState((p) => ({ ...p, saidaRetiradas: p.saidaRetiradas.filter((_, ix) => ix !== i) })); }} style={styles.iconBtn}>
-                      <Text style={styles.iconBtnText}>−</Text>
-                    </Pressable>
-                  )}
+                <View key={i} style={{ marginBottom: 8 }}>
+                  <FieldMoney value={v} onChange={(t) => {
+                    const next = state.saidaRetiradas.slice();
+                    next[i] = t.replace(/[^\d,.-]/g, "");
+                    setState({ ...state, saidaRetiradas: next });
+                  }} placeholder={`Retirada ${i + 1}`} />
                 </View>
               ))}
-            </Section>
+            </View>
 
-            {["Moeda", "Bolão", "Mkt"].map((k) => (
-              <MoneyInput key={k} label={k} value={state.saidaFixos[k as keyof typeof state.saidaFixos] || ""} onChangeText={(t) => setState((p) => ({ ...p, saidaFixos: { ...p.saidaFixos, [k]: t } }))} />
+            {/* 2-4) Fixos: Moeda, Bolão, Mkt */}
+            {["Moeda","Bolão","Mkt"].map((k) => (
+              <View key={k} style={{ marginBottom: 12 }}>
+                <Label>{k}</Label>
+                <FieldMoney value={state.saidaFixos[k]} onChange={(t)=> setState({ ...state, saidaFixos: { ...state.saidaFixos, [k]: t.replace(/[^\d,.-]/g, "") } })} />
+              </View>
             ))}
 
-            <Section
-              title="Pix"
-              right={<Pressable onPress={async () => { await Haptics.selectionAsync(); setState((p) => ({ ...p, saidaPix: [...p.saidaPix, { nome: "", valor: "" }] })); }} style={styles.iconBtn}><Text style={styles.iconBtnText}>+</Text></Pressable>}
-            >
-              {state.saidaPix.map((it, i) => (
-                <NameValueRow
-                  key={i}
-                  item={it}
-                  onChange={(novo) => setState((p) => { const arr = [...p.saidaPix]; arr[i] = novo; return { ...p, saidaPix: arr }; })}
-                  onRemove={state.saidaPix.length > 1 ? async () => { await Haptics.selectionAsync(); setState((p) => ({ ...p, saidaPix: p.saidaPix.filter((_, ix) => ix !== i) })); } : undefined}
-                />
-              ))}
-            </Section>
-
-            <Section
-              title="Fiado"
-              right={<Pressable onPress={async () => { await Haptics.selectionAsync(); setState((p) => ({ ...p, saidaFiados: [...p.saidaFiados, { nome: "", valor: "" }] })); }} style={styles.iconBtn}><Text style={styles.iconBtnText}>+</Text></Pressable>}
-            >
-              {state.saidaFiados.map((it, i) => (
-                <NameValueRow
-                  key={i}
-                  item={it}
-                  onChange={(novo) => setState((p) => { const arr = [...p.saidaFiados]; arr[i] = novo; return { ...p, saidaFiados: arr }; })}
-                  onRemove={state.saidaFiados.length > 1 ? async () => { await Haptics.selectionAsync(); setState((p) => ({ ...p, saidaFiados: p.saidaFiados.filter((_, ix) => ix !== i) })); } : undefined}
-                />
-              ))}
-            </Section>
-
-            <MoneyInput label="Troca" value={state.saidaFixos["Troca"] || ""} onChangeText={(t) => setState((p) => ({ ...p, saidaFixos: { ...p.saidaFixos, Troca: t } }))} />
-            <MoneyInput label="Raspinha" value={state.saidaFixos["Raspinha"] || ""} onChangeText={(t) => setState((p) => ({ ...p, saidaFixos: { ...p.saidaFixos, Raspinha: t } }))} />
-
-            <Section
-              title="Outros"
-              right={<Pressable onPress={async () => { await Haptics.selectionAsync(); setState((p) => ({ ...p, saidaOutros: [...p.saidaOutros, { nome: "", valor: "" }] })); }} style={styles.iconBtn}><Text style={styles.iconBtnText}>+</Text></Pressable>}
-            >
-              {state.saidaOutros.map((it, i) => (
-                <NameValueRow
-                  key={i}
-                  item={it}
-                  onChange={(novo) => setState((p) => { const arr = [...p.saidaOutros]; arr[i] = novo; return { ...p, saidaOutros: arr }; })}
-                  onRemove={state.saidaOutros.length > 1 ? async () => { await Haptics.selectionAsync(); setState((p) => ({ ...p, saidaOutros: p.saidaOutros.filter((_, ix) => ix !== i) })); } : undefined}
-                />
-              ))}
-            </Section>
-
-            <View style={{ marginTop: 8, alignItems: "flex-end" }}>
-              <Text style={{ color: "#111827", fontWeight: "800" }}>Total Saída: {BRL(totals.saida)}</Text>
+            {/* 5) Pix (dinâmico Nome+Valor) */}
+            <View style={{ marginBottom: 12 }}>
+              <View style={styles.headerRow}><Label>Pix</Label></View>
+              {renderNameValue(state.saidaPix, (next:any)=>setState({ ...state, saidaPix: next }), "Pix")}
             </View>
+
+            {/* 6) Fiado (dinâmico Nome+Valor) */}
+            <View style={{ marginBottom: 12 }}>
+              <View style={styles.headerRow}><Label>Fiado</Label></View>
+              {renderNameValue(state.saidaFiados, (next:any)=>setState({ ...state, saidaFiados: next }), "Fiado")}
+            </View>
+
+            {/* 7) Troca (fixo) */}
+            <View style={{ marginBottom: 12 }}>
+              <Label>Troca</Label>
+              <FieldMoney value={state.saidaFixos["Troca"]} onChange={(t)=> setState({ ...state, saidaFixos: { ...state.saidaFixos, Troca: t.replace(/[^\d,.-]/g, "") } })} />
+            </View>
+
+            {/* 8) Raspinha fixo (um campo) */}
+            <View style={{ marginBottom: 12 }}>
+              <Label>Raspinha</Label>
+              <FieldMoney value={state.saidaFixos["Raspinha"]} onChange={(t)=> setState({ ...state, saidaFixos: { ...state.saidaFixos, Raspinha: t.replace(/[^\d,.-]/g, "") } })} />
+            </View>
+
+            {/* 9) Outros (dinâmico Nome+Valor) */}
+            <View style={{ marginBottom: 12 }}>
+              <View style={styles.headerRow}><Label>Outros</Label></View>
+              {renderNameValue(state.saidaOutros, (next:any)=>setState({ ...state, saidaOutros: next }), "Outros")}
+            </View>
+
+            {/* Total Saída (direita) */}
+            <View style={styles.totalRow}><Text style={styles.totalLabel}>Total Saída</Text><Text style={styles.totalValue}>{BRL(totals.saida)}</Text></View>
           </View>
 
-          {/* RESUMO */}
+          {/* Resumo final + ações */}
           <View style={s.card}>
-            <Text style={{ color: "#1F2A37", fontSize: 16, fontWeight: "800", marginBottom: 6 }}>Resumo 🧮</Text>
-            <Row label="Total Entrada" value={BRL(totals.entrada)} />
-            <Row label="Total Saída" value={BRL(totals.saida)} />
-            <Row label="Resultado" value={BRL(totals.resultado)} strong />
+            <Text style={{ color: "#1F2A37", fontSize: 16, fontWeight: "800", marginBottom: 6 }}>Resumo</Text>
+            <View style={styles.totalRow}><Text style={styles.totalLabel}>Resultado</Text><Text style={styles.totalValue}>{BRL(totals.resultado)}</Text></View>
             <View style={{ height: 12 }} />
             <View style={{ flexDirection: "row", gap: 12 }}>
               <Pressable style={[s.btn, s.btnSolid, { flex: 1, flexDirection: "row", gap: 8, borderRadius: 999 }]} onPress={salvarHoje}>
                 <MaterialCommunityIcons name="content-save-outline" size={18} color="#fff" />
-                <Text style={s.btnText}>Salvar do dia</Text>
+                <Text style={s.btnText}>Salvar do dia (gera + envia CSV)</Text>
               </Pressable>
               <Pressable style={[s.btn, { flex: 1, borderWidth: 1, borderColor: "#E7EAF6", backgroundColor: "#FFFFFF", borderRadius: 999, flexDirection: "row", gap: 8 }]} onPress={limparTudo}>
                 <MaterialCommunityIcons name="broom" size={18} color="#7C83FD" />
@@ -327,18 +420,10 @@ export default function FechamentoScreen() {
   );
 }
 
-function Row({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
-  return (
-    <View style={{ flexDirection: "row", justifyContent: "space-between", paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: "#EEF1F7" }}>
-      <Text style={{ color: "#6B7280" }}>{label}</Text>
-      <Text style={{ color: "#111827", fontWeight: strong ? "800" : "700" }}>{value}</Text>
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
-  sectionHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 6 },
-  sectionTitle: { color: "#374151", fontWeight: "800", fontSize: 16 },
+  sectionTitle: { color: "#111827", fontWeight: "800", fontSize: 18, marginBottom: 8 },
+  headerRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 6 },
+  fieldLabel: { color: "#655ad8", fontWeight: "800", marginBottom: 6, fontSize: 16 },
   input: {
     backgroundColor: "#FAFBFF",
     borderColor: "#E7EAF6",
@@ -349,12 +434,13 @@ const styles = StyleSheet.create({
     color: "#1F2A37",
   },
   rowNV: { flexDirection: "row", alignItems: "flex-end", gap: 8, marginBottom: 10 },
-  counter: {
-    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
-    borderColor: "#E7EAF6", borderWidth: 1, borderRadius: 16, paddingHorizontal: 12, paddingVertical: 8, backgroundColor: "#FFFFFF", marginBottom: 8,
-  },
-  counterOp: { color: "#5D6BFF", fontSize: 24, width: 28, textAlign: "center" },
+  circleBtn: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", backgroundColor: "#E9EDFF" },
+  circleBtnSmall: { width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: "#F3F4FF", marginBottom: 8 },
+  circleBtnText: { color: "#5D6BFF", fontSize: 18, fontWeight: "800", lineHeight: 18 },
+  counter: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderColor: "#E7EAF6", borderWidth: 1, borderRadius: 16, paddingHorizontal: 12, paddingVertical: 8, backgroundColor: "#FFFFFF", marginBottom: 8 },
   counterQty: { color: "#1F2A37", fontWeight: "800", width: 36, textAlign: "center" },
-  iconBtn: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", backgroundColor: "#E9EDFF" },
-  iconBtnText: { color: "#5D6BFF", fontSize: 18, fontWeight: "800", lineHeight: 18 },
+  totalRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 6 },
+  totalLabel: { color: "#6B7280", fontWeight: "700" },
+  totalValue: { color: "#111827", fontWeight: "800" },
 });
+
