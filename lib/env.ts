@@ -1,0 +1,7 @@
+
+export const ENV = {
+  ENDPOINT_MAIN: "https://SEU_WEBAPP_MAIN/exec",
+  ENDPOINT_CONTROL: "https://SEU_WEBAPP_CONTROLE/exec",
+  ENDPOINT_COMMISSIONS: "https://SEU_WEBAPP_COMISSOES/exec",
+  TOKEN: "SEU_TOKEN_SEGURO",
+};
