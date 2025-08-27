@@ -1,27 +1,37 @@
-// app/(tabs)/_layout.tsx
-// Tabs sem a aba de Relatórios (removida). Mantém apenas a tela principal de Fechamento (index).
-import React from "react";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { Tabs } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
+
+const C = { bg: "#ffffffff", accent: "#dd9abaff" };
 
 export default function TabsLayout() {
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
-        tabBarActiveTintColor: "#655ad8",
-        tabBarInactiveTintColor: "#9CA3AF",
+        tabBarActiveTintColor: C.accent,
+        tabBarInactiveTintColor: "#7a5a6c",
+        tabBarStyle: { backgroundColor: C.bg, borderTopColor: C.accent, borderTopWidth: 2 },
+        tabBarLabelStyle: { fontWeight: "800" },
       }}
-      initialRouteName="index"
     >
       <Tabs.Screen
         name="index"
         options={{
           title: "Fechamento",
-          tabBarIcon: ({ color, size }) => <Ionicons name="cash-outline" color={color} size={size} />,
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="cash-register" size={size ?? 22} color={color} />
+          ),
         }}
       />
-      {/** Aba de Relatórios removida */}
+      <Tabs.Screen
+        name="analise"   // <-- TEM que existir app/(tabs)/analise.tsx com export default
+        options={{
+          title: "Análise",
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="chart-line" size={size ?? 22} color={color} />
+          ),
+        }}
+      />
     </Tabs>
   );
 }

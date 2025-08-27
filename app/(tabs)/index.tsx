@@ -1,1091 +1,822 @@
-// app/(tabs)/index.tsx
-// Versão completa atualizada:
-// - APPSCRIPT_URL configurado (sua URL)
-// - Fila offline + envio automático p/ Apps Script
-// - Campos dinâmicos (Dinheiro, Mkt Entrada, Raspinha Saída, Recebimento/Pix/Fiado/Outros Nome+Valor)
-// - Raspinha Entrada por denominações com contador
-// - Em caixa (numérico)
-// - Abas Entrada|Saída + Resumo + Salvar/Limpar/Enviar
-// - Regex corrigidos (inputs numéricos não “apagam”)
-// - Confirmação antes de ENVIAR por e-mail (Alert)
-
+import { Ionicons } from "@expo/vector-icons";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useEffect, useMemo, useState } from "react";
 import {
   Alert,
-  KeyboardAvoidingView,
+  Modal,
   Platform,
+  Pressable,
   SafeAreaView,
   ScrollView,
+  StyleSheet,
   Text,
   TextInput,
+  TextStyle,
   View,
-  Pressable,
-  StyleSheet,
 } from "react-native";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import NetInfo from "@react-native-community/netinfo";
-import * as FileSystem from "expo-file-system";
-import * as Sharing from "expo-sharing";
-import * as MailComposer from "expo-mail-composer";
-import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
-import { LinearGradient } from "expo-linear-gradient";
 
-// Estes dois imports assumem que você já tem esses arquivos no projeto.
-// Se não tiver, me avise que eu embuto os estilos aqui.
-import { s } from "../../styles/shared";
-import { sanitizeNumber as toNumber } from "../../components/ui/currency";
+/** Ajuste se usar Apps Script */
+const APPSCRIPT_URL = "https://script.google.com/macros/s/AKfycbzjcFjoIAp3DrSCHF_NNFsFDtokDNTlMk3Ql_Ayp8wUq0NixFLUGady7F3RsMuAjRIi/exec";
+const STORAGE_KEY = "";
 
-// === CONFIG ===
-const APPSCRIPT_URL =
-  "https://script.google.com/macros/s/AKfycbwbYq66I0MR2ggZWWIQZra7nuZSy9Inuj1KVxqCTH3qXrSww5e6FJ5z67Kpq2-Hz_bn/exec";
-// Se o seu Apps Script valida SECRET_KEY, preencha aqui com o mesmo valor. Se não usa secret, deixe "".
-const APPSCRIPT_SECRET = "1vb_snWSUsBS1XgLYkK6ns9-NP6qrGs4M";
-const OUTBOX_KEY = "fechamento:outbox"; // fila offline
-const FIXO_EMAIL = "lotericabeltrao@gmail.com";
+/** Lista fixa de clientes (fiado/recebimento) */
+const CLIENTES = [
+  "Mamão","Galante","Colaço","Eugênio","Lô","José XCAP","Irineu","Adilson","Antônio Ribeiro","Josué",
+  "Paulo Borges","Jacqueline","Pai","Lucas","Adriana","Shirley","Jair","Sonia P","Paião","Cardoso",
+  "Volante","Machado","Henrique","Giva","Polato","Peletiero","Minha Grife","Instaladora Andrade",
+];
 
-const DENOMS = [
-  { key: "2.50", label: "2,50", value: 2.5 },
-  { key: "5.00", label: "5,00", value: 5 },
-  { key: "10.00", label: "10,00", value: 10 },
-  { key: "20.00", label: "20,00", value: 20 },
-] as const;
+const C = { bg: "#ffdbd7", accent: "#dd9abaff", textDark: "#832d69ff", white: "#ffffff", border: "#dd9abaff" };
 
-function hojeKey() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(
-    2,
-    "0"
-  )}-${String(d.getDate()).padStart(2, "0")}`;
+/** helpers */
+const toNumber = (v: any) =>
+  typeof v === "number" ? v : parseFloat(String(v ?? "").replace(",", ".").replace(/[^\d.-]/g, "")) || 0;
+const currency = (n: number) => (n || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+
+/** Sanitiza texto para numérico (mantém vazio) */
+function sanitizeNumText(t: string) {
+  if (t.trim() === "") return "";
+  const cleaned = t.replace(",", ".").replace(/[^\d.]/g, "");
+  const parts = cleaned.split(".");
+  const normalized = parts.length > 2 ? `${parts[0]}.${parts.slice(1).join("")}` : cleaned;
+  return normalized;
 }
-const STORAGE_KEY = "fechamento:" + hojeKey();
-const BRL = (n: number) =>
-  n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
-// Tipos
-type NameValue = { nome: string; valor: string };
-type UserInfo = { user: string; nome: string } | null;
+/** Estilos */
+const S = StyleSheet.create({
+  safe: { flex: 1, backgroundColor: C.bg },
+  container: { padding: 16 },
 
-// Estado
-type State = {
-  // ENTRADA
-  entradaDinheiro: string[];
-  entradaFixos: Record<string, string>; // Moeda, Tarifa, Bolão, Telesena, EmCaixa
-  entradaMkt: string[]; // Mkt dinâmico
-  entradaRecebimentos: NameValue[]; // Nome+Valor
-  entradaDenomQtds: Record<"2.50" | "5.00" | "10.00" | "20.00", number>; // raspinha por denom
+  titulo: { fontSize: 22, fontWeight: "900", color: C.accent, marginBottom: 8 },
 
-  // SAÍDA
-  saidaRetiradas: string[];
-  saidaFixos: Record<string, string>; // Moeda, Bolão, Mkt, Troca (Raspinha separado e dinâmico)
-  saidaRaspinhas: string[]; // raspinha saída dinâmica
-  saidaPix: NameValue[];
-  saidaFiados: NameValue[];
-  saidaOutros: NameValue[];
+  greetRow: { flexDirection: "row", alignItems: "center", marginBottom: 10 },
+  greetText: { fontStyle: "italic", color: C.textDark, fontWeight: "600", marginRight: 6 },
 
-  userInfo: UserInfo;
-};
-
-const blank = (): State => ({
-  entradaDinheiro: [""],
-  entradaFixos: {
-    Moeda: "",
-    Tarifa: "",
-    "Bolão": "",
-    Telesena: "",
-    EmCaixa: "",
+  tabsRow: { flexDirection: "row", marginBottom: 12 },
+  tabBtn: {
+    flex: 1,
+    alignItems: "center",
+    paddingVertical: 10,
+    marginHorizontal: 5,
+    borderWidth: 2,
+    borderColor: C.border,
+    borderRadius: 10,
+    backgroundColor: C.white, // fundo branco mesmo inativa
+    ...(Platform.OS === "web" ? { boxShadow: "0 3px 8px rgba(0,0,0,0.06)" as any } : { elevation: 2 }),
   },
-  entradaMkt: [""],
-  entradaRecebimentos: [{ nome: "", valor: "" }],
-  entradaDenomQtds: { "2.50": 0, "5.00": 0, "10.00": 0, "20.00": 0 },
+  tabBtnActive: { backgroundColor: C.accent },
+  tabText: { color: C.accent, fontWeight: "900" },
+  tabTextActive: { color: "#fff", fontWeight: "900" },
 
-  saidaRetiradas: [""],
-  saidaFixos: { Moeda: "", "Bolão": "", Mkt: "", Troca: "" },
-  saidaRaspinhas: [""],
-  saidaPix: [{ nome: "", valor: "" }],
-  saidaFiados: [{ nome: "", valor: "" }],
-  saidaOutros: [{ nome: "", valor: "" }],
+  label: { fontWeight: "800", color: C.accent, marginBottom: 6 },
 
-  userInfo: null,
+  input: {
+    flex: 1,
+    alignSelf: "stretch",
+    backgroundColor: C.white,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: C.border,
+    paddingHorizontal: 12,
+    paddingVertical: Platform.OS === "web" ? 8 : 10,
+    marginBottom: 12,
+    color: C.textDark,
+    fontWeight: "700" as TextStyle["fontWeight"],
+  },
+  inputCompact: {
+    paddingHorizontal: 8,
+    paddingVertical: Platform.OS === "web" ? 6 : 8,
+    marginBottom: 6,
+  },
+
+  // Cards (formulário e resumo)
+  card: {
+    backgroundColor: C.white,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 12,
+    ...(Platform.OS === "web"
+      ? { boxShadow: "0 4px 10px rgba(0,0,0,0.08)" as any }
+      : { elevation: 3 }),
+  },
+  cardSmall: {
+    backgroundColor: C.white,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 16,
+    ...(Platform.OS === "web"
+      ? { boxShadow: "0 4px 10px rgba(0,0,0,0.10)" as any }
+      : { elevation: 2 }),
+  },
+
+  sectionHeader: {
+    color: C.accent,
+    fontWeight: "900",
+    fontSize: 18,
+    marginBottom: 8,
+  },
+
+  groupCard: { backgroundColor: "transparent", borderWidth: 0, borderRadius: 0, marginBottom: 10, padding: 0 },
+  groupHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 6 },
+  groupTitle: { color: C.accent, fontWeight: "900", fontSize: 16 },
+  groupBtns: { flexDirection: "row" },
+
+  smallBtn: {
+    width: 30, height: 30, borderWidth: 0, borderColor: "transparent", borderRadius: 15,
+    backgroundColor: "transparent", alignItems: "center", justifyContent: "center", marginHorizontal: 6,
+  },
+
+  row2: { flexDirection: "row" },
+  col: { flex: 1, marginRight: 10 },
+  colLast: { flex: 1 },
+
+  actionButtonsRow: { flexDirection: "row", justifyContent: "space-around", marginTop: 16, marginBottom: 28 },
+  actionButton: {
+    flex: 1,
+    paddingVertical: 12,
+    marginHorizontal: 6,
+    borderWidth: 2,
+    borderColor: C.border,
+    borderRadius: 10,
+    backgroundColor: C.white, // fundo branco
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    ...(Platform.OS === "web"
+      ? { boxShadow: "0 4px 10px rgba(0,0,0,0.12)" as any }
+      : { elevation: 4 }),
+  },
+  actionButtonText: { color: C.accent, fontWeight: "800", fontSize: 16 },
+
+  resumoRow: { flexDirection: "row", justifyContent: "space-between", marginVertical: 4 },
+  resumoLabel: { color: C.textDark, fontWeight: "800" },
+  resumoValor: { color: C.textDark, fontWeight: "900" },
+
+  modalBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)", justifyContent: "center", padding: 16 },
+  modalCard: { backgroundColor: C.white, borderRadius: 10, padding: 12, maxHeight: "70%" },
+  searchInput: {
+    alignSelf: "stretch", backgroundColor: "#fff", borderRadius: 10, borderWidth: 2, borderColor: C.border,
+    paddingHorizontal: 12, paddingVertical: 8, marginBottom: 10, color: C.textDark, fontWeight: "700" as TextStyle["fontWeight"],
+  },
+  chip: { paddingVertical: 10, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: "#eee" },
+  chipText: { color: C.textDark, fontWeight: "800" as TextStyle["fontWeight"] },
+
+  nameBox: {
+    flex: 1, borderWidth: 2, borderColor: C.border, borderRadius: 10, backgroundColor: C.white,
+    paddingHorizontal: 12, paddingVertical: 10, marginBottom: 12, justifyContent: "center",
+  },
+  nameBoxText: { color: C.textDark, fontWeight: "800" as TextStyle["fontWeight"] },
+  nameBoxPlaceholder: { color: "#9c6e82", fontWeight: "700" as TextStyle["fontWeight"] },
 });
 
-/** ==================== CSV ==================== */
-function buildCsv(data: State) {
-  const linhas: string[] = [];
-  const dia = hojeKey();
-  linhas.push(`Fechamento de Caixa;${dia}`);
-  if (data?.userInfo) {
-    linhas.push(`Caixa;${data.userInfo.nome} (${data.userInfo.user})`);
-  }
-  linhas.push("");
+type NameValue = { nome?: string; valor?: string };
 
-  // ENTRADA (ordem solicitada)
-  linhas.push("ENTRADA");
-  (data.entradaDinheiro || []).forEach((v: string, i: number) =>
-    linhas.push(`Dinheiro ${i + 1};${toNumber(v).toFixed(2).replace(".", ",")}`)
-  );
-  ["Moeda", "Tarifa", "Bolão"].forEach((k) => {
-    const v = (data.entradaFixos || {})[k] || "";
-    linhas.push(`${k};${toNumber(v).toFixed(2).replace(".", ",")}`);
-  });
-
-  (data.entradaMkt || []).forEach((v: string, i: number) =>
-    linhas.push(`Mkt ${i + 1};${toNumber(v).toFixed(2).replace(".", ",")}`)
-  );
-
-  (data.entradaRecebimentos || []).forEach((it: any, i: number) => {
-    const label = it?.nome ? `Recebimento ${i + 1} - ${it.nome}` : `Recebimento ${i + 1}`;
-    linhas.push(`${label};${toNumber(it?.valor).toFixed(2).replace(".", ",")}`);
-  });
-
-  const telesena = (data.entradaFixos || {})["Telesena"] || "";
-  linhas.push(`Telesena;${toNumber(telesena).toFixed(2).replace(".", ",")}`);
-  const entradaDenomQtds = data.entradaDenomQtds || {};
-  DENOMS.forEach((d) => {
-    const qtd = Number(entradaDenomQtds[d.key] || 0);
-    const total = (qtd * d.value).toFixed(2).replace(".", ",");
-    linhas.push(`Raspinha ${d.label} (qtd);${qtd}`);
-    linhas.push(`Raspinha ${d.label} (total);${total}`);
-  });
-
-  // SAÍDA (ordem solicitada)
-  linhas.push("");
-  linhas.push("SAÍDA");
-  (data.saidaRetiradas || []).forEach((v: string, i: number) =>
-    linhas.push(`Retirada ${i + 1};${toNumber(v).toFixed(2).replace(".", ",")}`)
-  );
-  ["Moeda", "Bolão", "Mkt", "Troca"].forEach((k) => {
-    const v = (data.saidaFixos || {})[k] || "";
-    linhas.push(`${k};${toNumber(v).toFixed(2).replace(".", ",")}`);
-  });
-
-  (data.saidaPix || []).forEach((it: any, i: number) => {
-    const label = it?.nome ? `Pix ${i + 1} - ${it.nome}` : `Pix ${i + 1}`;
-    linhas.push(`${label};${toNumber(it?.valor).toFixed(2).replace(".", ",")}`);
-  });
-  (data.saidaFiados || []).forEach((it: any, i: number) => {
-    const label = it?.nome ? `Fiado ${i + 1} - ${it.nome}` : `Fiado ${i + 1}`;
-    linhas.push(`${label};${toNumber(it?.valor).toFixed(2).replace(".", ",")}`);
-  });
-
-  // Raspinha (Saída) dinâmica
-  (data.saidaRaspinhas || []).forEach((v: string, i: number) =>
-    linhas.push(`Raspinha ${i + 1};${toNumber(v).toFixed(2).replace(".", ",")}`)
-  );
-
-  // Outros
-  (data.saidaOutros || []).forEach((it: any, i: number) => {
-    const label = it?.nome ? `Outros ${i + 1} - ${it.nome}` : `Outros ${i + 1}`;
-    linhas.push(`${label};${toNumber(it?.valor).toFixed(2).replace(".", ",")}`);
-  });
-
-  // Totais
-  const somaArr = (arr?: any[]) =>
-    Array.isArray(arr) ? arr.reduce((a, v) => a + toNumber(v), 0) : 0;
-  const somaObj = (obj?: Record<string, any>) =>
-    obj ? Object.values(obj).reduce((a, v) => a + toNumber(v), 0) : 0;
-  const sumNameValue = (arr?: any[]) =>
-    Array.isArray(arr) ? arr.reduce((a, it) => a + toNumber(it?.valor), 0) : 0;
-  const somaDenoms = DENOMS.reduce(
-    (acc, d) => acc + (Number((data?.entradaDenomQtds || {})[d.key]) || 0) * d.value,
-    0
-  );
-  const entrada =
-    somaArr(data?.entradaDinheiro) +
-    somaObj(data?.entradaFixos) +
-    somaArr(data?.entradaMkt) +
-    sumNameValue(data?.entradaRecebimentos) +
-    somaDenoms;
-  const saida =
-    somaArr(data?.saidaRetiradas) +
-    somaObj(data?.saidaFixos) +
-    somaNV(data?.saidaPix) +
-    somaNV(data?.saidaFiados) +
-    somaArr(data?.saidaRaspinhas) +
-    somaNV(data?.saidaOutros);
-  const resultado = entrada - saida;
-
-  linhas.push("");
-  linhas.push(`Total Entrada;${entrada.toFixed(2).replace(".", ",")}`);
-  linhas.push(`Total Saída;${saida.toFixed(2).replace(".", ",")}`);
-  linhas.push(`RESULTADO;${resultado.toFixed(2).replace(".", ",")}`);
-
-  return linhas.join("\n");
-
-  function somaNV(arr?: any[]) {
-    return Array.isArray(arr) ? arr.reduce((a, it) => a + toNumber(it?.valor), 0) : 0;
-  }
-}
-
-/** ==================== HELPERS FORM ==================== */
-function Label({ children }: { children: React.ReactNode }) {
-  return <Text style={styles.fieldLabel}>{children}</Text>;
-}
-
-// Aceita dígitos, vírgula, ponto e sinal (corrige bug de apagar)
-function FieldMoney({
-  value,
-  onChange,
-  placeholder,
-}: {
-  value: string;
-  onChange: (t: string) => void;
-  placeholder?: string;
-}) {
-  return (
-    <TextInput
-      value={value}
-      onChangeText={(t) => onChange(t.replace(/[^\d,.-]/g, ""))}
-      placeholder={placeholder || "0,00"}
-      keyboardType="numeric"
-      inputMode="decimal"
-      autoCorrect={false}
-      autoCapitalize="none"
-      style={styles.input}
-    />
-  );
-}
-
-function AddRemove({ onAdd, onRemove }: { onAdd: () => void; onRemove: () => void }) {
-  return (
-    <View style={{ flexDirection: "row", gap: 8 }}>
-      <Pressable onPress={onRemove} style={styles.circleBtn}>
-        <Text style={styles.circleBtnText}>−</Text>
-      </Pressable>
-      <Pressable onPress={onAdd} style={styles.circleBtn}>
-        <Text style={styles.circleBtnText}>+</Text>
-      </Pressable>
-    </View>
-  );
-}
-
-function NameValueList({
-  arr,
-  onChange,
-}: {
-  arr: NameValue[];
-  onChange: (next: NameValue[]) => void;
-}) {
-  return (
-    <View>
-      {arr.map((it, idx) => (
-        <View key={idx} style={styles.rowNV}>
-          <TextInput
-            value={it.nome}
-            onChangeText={(t) => {
-              const next = arr.slice();
-              next[idx] = { ...it, nome: t.replace(/\d/g, "") };
-              onChange(next);
-            }}
-            placeholder="Nome"
-            autoCapitalize="words"
-            autoCorrect={false}
-            style={[styles.input, { flex: 1 }]}
-          />
-          <TextInput
-            value={it.valor}
-            onChangeText={(t) => {
-              const next = arr.slice();
-              next[idx] = { ...it, valor: t.replace(/[^\d,.-]/g, "") };
-              onChange(next);
-            }}
-            placeholder="0,00"
-            keyboardType="numeric"
-            inputMode="decimal"
-            style={[styles.input, { width: 130 }]}
-          />
-        </View>
-      ))}
-    </View>
-  );
-}
-
-/** ==================== ENVIO PLANILHA (Apps Script) ==================== */
-function buildPayloadForScript(state: State) {
-  return {
-    secret: APPSCRIPT_SECRET,
-    date: hojeKey(),
-    userInfo: state.userInfo || {},
-    // ENTRADA
-    entradaDinheiro: state.entradaDinheiro,
-    entradaFixos: state.entradaFixos,
-    entradaMkt: state.entradaMkt,
-    entradaDenomQtds: state.entradaDenomQtds,
-    entradaRecebimentos: state.entradaRecebimentos,
-    // SAÍDA
-    saidaRetiradas: state.saidaRetiradas,
-    saidaFixos: state.saidaFixos,
-    saidaRaspinhas: state.saidaRaspinhas,
-    saidaPix: state.saidaPix,
-    saidaFiados: state.saidaFiados,
-    saidaOutros: state.saidaOutros,
-  };
-}
-
-async function postToScript(payload: any): Promise<boolean> {
-  try {
-    if (!APPSCRIPT_URL) return false;
-    const res = await fetch(APPSCRIPT_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const json = await res.json();
-    return !!json?.ok;
-  } catch {
-    return false;
-  }
-}
-
-async function readOutbox(): Promise<any[]> {
-  try {
-    const raw = await AsyncStorage.getItem(OUTBOX_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-async function writeOutbox(items: any[]) {
-  try {
-    await AsyncStorage.setItem(OUTBOX_KEY, JSON.stringify(items));
-  } catch {}
-}
-async function enqueue(payload: any) {
-  const box = await readOutbox();
-  box.push({ id: `${Date.now()}:${Math.random()}`, payload });
-  await writeOutbox(box);
-}
-async function trySyncOutbox() {
-  const box = await readOutbox();
-  if (!box.length) return;
-  const stillPending: any[] = [];
-  for (const item of box) {
-    const ok = await postToScript(item.payload);
-    if (!ok) stillPending.push(item);
-  }
-  await writeOutbox(stillPending);
-  if (box.length && !stillPending.length) Alert.alert("Planilha", "Dados pendentes enviados ✅");
-}
-
-/** ==================== ABAS ==================== */
-type TabProps = { state: State; setState: React.Dispatch<React.SetStateAction<State>> };
-
-// ---------- ENTRADA ----------
-function EntradaView({ state, setState }: TabProps) {
-  return (
-    <View style={s.card}>
-      <Text style={styles.sectionTitle}>Entrada</Text>
-
-      {/* Dinheiro (dinâmico) */}
-      <View style={{ marginBottom: 12 }}>
-        <View style={styles.headerRow}>
-          <Label>Dinheiro</Label>
-          <AddRemove
-            onAdd={() =>
-              setState((prev) => ({ ...prev, entradaDinheiro: [...prev.entradaDinheiro, ""] }))
-            }
-            onRemove={() =>
-              setState((prev) => ({
-                ...prev,
-                entradaDinheiro:
-                  prev.entradaDinheiro.length > 1
-                    ? prev.entradaDinheiro.slice(0, -1)
-                    : prev.entradaDinheiro,
-              }))
-            }
-          />
-        </View>
-        {state.entradaDinheiro.map((v, i) => (
-          <View key={i} style={{ marginBottom: 8 }}>
-            <FieldMoney
-              value={v}
-              onChange={(t) => {
-                setState((prev) => {
-                  const next = prev.entradaDinheiro.slice();
-                  next[i] = t;
-                  return { ...prev, entradaDinheiro: next };
-                });
-              }}
-              placeholder={`Dinheiro ${i + 1}`}
-            />
-          </View>
-        ))}
-      </View>
-
-      {/* Fixos: Moeda, Tarifa, Bolão */}
-      {["Moeda", "Tarifa", "Bolão"].map((k) => (
-        <View key={k} style={{ marginBottom: 12 }}>
-          <Label>{k}</Label>
-          <FieldMoney
-            value={state.entradaFixos[k]}
-            onChange={(t) =>
-              setState((prev) => ({
-                ...prev,
-                entradaFixos: { ...prev.entradaFixos, [k]: t },
-              }))
-            }
-          />
-        </View>
-      ))}
-
-      {/* Mkt (dinâmico) */}
-      <View style={{ marginBottom: 12 }}>
-        <View style={styles.headerRow}>
-          <Label>Mkt</Label>
-          <AddRemove
-            onAdd={() =>
-              setState((prev) => ({ ...prev, entradaMkt: [...prev.entradaMkt, ""] }))
-            }
-            onRemove={() =>
-              setState((prev) => ({
-                ...prev,
-                entradaMkt:
-                  prev.entradaMkt.length > 1 ? prev.entradaMkt.slice(0, -1) : prev.entradaMkt,
-              }))
-            }
-          />
-        </View>
-        {state.entradaMkt.map((v, i) => (
-          <View key={i} style={{ marginBottom: 8 }}>
-            <FieldMoney
-              value={v}
-              onChange={(t) => {
-                setState((prev) => {
-                  const next = prev.entradaMkt.slice();
-                  next[i] = t;
-                  return { ...prev, entradaMkt: next };
-                });
-              }}
-              placeholder={`Mkt ${i + 1}`}
-            />
-          </View>
-        ))}
-      </View>
-
-      {/* Recebimento (Nome + Valor dinâmico) */}
-      <View style={{ marginBottom: 12 }}>
-        <View style={styles.headerRow}>
-          <Label>Recebimento</Label>
-          <AddRemove
-            onAdd={() =>
-              setState((prev) => ({
-                ...prev,
-                entradaRecebimentos: [...prev.entradaRecebimentos, { nome: "", valor: "" }],
-              }))
-            }
-            onRemove={() =>
-              setState((prev) => ({
-                ...prev,
-                entradaRecebimentos:
-                  prev.entradaRecebimentos.length > 1
-                    ? prev.entradaRecebimentos.slice(0, -1)
-                    : prev.entradaRecebimentos,
-              }))
-            }
-          />
-        </View>
-        <NameValueList
-          arr={state.entradaRecebimentos}
-          onChange={(next) => setState((prev) => ({ ...prev, entradaRecebimentos: next }))}
-        />
-      </View>
-
-      {/* Telesena */}
-      <View style={{ marginBottom: 12 }}>
-        <Label>Telesena</Label>
-        <FieldMoney
-          value={state.entradaFixos["Telesena"]}
-          onChange={(t) =>
-            setState((prev) => ({
-              ...prev,
-              entradaFixos: { ...prev.entradaFixos, Telesena: t },
-            }))
-          }
-        />
-      </View>
-
-      {/* Raspinha (Entrada) por denominações */}
-      <View style={{ marginBottom: 12 }}>
-        <Label>Raspinha</Label>
-        {DENOMS.map((d) => (
-          <View key={d.key} style={[styles.counter, { alignItems: "center" }]}>
-            <Text style={{ color: "#374151", fontWeight: "700", minWidth: 46 }}>{d.label}</Text>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-              <Pressable
-                onPress={() =>
-                  setState((prev) => ({
-                    ...prev,
-                    entradaDenomQtds: {
-                      ...prev.entradaDenomQtds,
-                      [d.key]: Math.max(0, (prev.entradaDenomQtds[d.key] || 0) - 1),
-                    },
-                  }))
-                }
-                style={styles.circleBtn}
-              >
-                <Text style={styles.circleBtnText}>−</Text>
-              </Pressable>
-              <Text style={styles.counterQty}>{state.entradaDenomQtds[d.key] || 0}</Text>
-              <Pressable
-                onPress={() =>
-                  setState((prev) => ({
-                    ...prev,
-                    entradaDenomQtds: {
-                      ...prev.entradaDenomQtds,
-                      [d.key]: (prev.entradaDenomQtds[d.key] || 0) + 1,
-                    },
-                  }))
-                }
-                style={styles.circleBtn}
-              >
-                <Text style={styles.circleBtnText}>+</Text>
-              </Pressable>
-            </View>
-            <View style={{ width: 90 }}>
-              <TextInput
-                value={String(state.entradaDenomQtds[d.key] || 0)}
-                onChangeText={(t) => {
-                  const onlyDigits = t.replace(/[^\d]/g, "");
-                  const val = onlyDigits === "" ? 0 : parseInt(onlyDigits, 10);
-                  setState((prev) => ({
-                    ...prev,
-                    entradaDenomQtds: {
-                      ...prev.entradaDenomQtds,
-                      [d.key]: isNaN(val) ? 0 : val,
-                    },
-                  }));
-                }}
-                keyboardType="numeric"
-                style={[styles.input, { paddingVertical: 8, textAlign: "center" }]}
-                placeholder="Qtd"
-              />
-            </View>
-          </View>
-        ))}
-      </View>
-
-      {/* Em caixa */}
-      <View style={{ marginBottom: 12 }}>
-        <Label>Em caixa</Label>
-        <FieldMoney
-          value={state.entradaFixos["EmCaixa"]}
-          onChange={(t) =>
-            setState((prev) => ({
-              ...prev,
-              entradaFixos: { ...prev.entradaFixos, EmCaixa: t },
-            }))
-          }
-        />
-      </View>
-
-      {/* Total Entrada */}
-      <View style={styles.totalRow}>
-        <Text style={styles.totalLabel}>Total Entrada</Text>
-        <Text style={styles.totalValue}>
-          {BRL(
-            state.entradaDinheiro.reduce((a, v) => a + toNumber(v), 0) +
-              Object.values(state.entradaFixos).reduce((a, v) => a + toNumber(v), 0) +
-              state.entradaMkt.reduce((a, v) => a + toNumber(v), 0) +
-              state.entradaRecebimentos.reduce((a, it) => a + toNumber(it.valor), 0) +
-              DENOMS.reduce(
-                (acc, d) => acc + (state.entradaDenomQtds[d.key] || 0) * d.value,
-                0
-              )
-          )}
-        </Text>
-      </View>
-    </View>
-  );
-}
-
-// ---------- SAÍDA ----------
-function SaidaView({ state, setState }: TabProps) {
-  return (
-    <View style={s.card}>
-      <Text style={styles.sectionTitle}>Saída</Text>
-
-      {/* Retirada (dinâmico) */}
-      <View style={{ marginBottom: 12 }}>
-        <View style={styles.headerRow}>
-          <Label>Retirada</Label>
-          <AddRemove
-            onAdd={() =>
-              setState((prev) => ({ ...prev, saidaRetiradas: [...prev.saidaRetiradas, ""] }))
-            }
-            onRemove={() =>
-              setState((prev) => ({
-                ...prev,
-                saidaRetiradas:
-                  prev.saidaRetiradas.length > 1
-                    ? prev.saidaRetiradas.slice(0, -1)
-                    : prev.saidaRetiradas,
-              }))
-            }
-          />
-        </View>
-        {state.saidaRetiradas.map((v, i) => (
-          <View key={i} style={{ marginBottom: 8 }}>
-            <FieldMoney
-              value={v}
-              onChange={(t) => {
-                setState((prev) => {
-                  const next = prev.saidaRetiradas.slice();
-                  next[i] = t;
-                  return { ...prev, saidaRetiradas: next };
-                });
-              }}
-              placeholder={`Retirada ${i + 1}`}
-            />
-          </View>
-        ))}
-      </View>
-
-      {/* Fixos: Moeda, Bolão, Mkt, Troca */}
-      {["Moeda", "Bolão", "Mkt", "Troca"].map((k) => (
-        <View key={k} style={{ marginBottom: 12 }}>
-          <Label>{k}</Label>
-          <FieldMoney
-            value={state.saidaFixos[k]}
-            onChange={(t) =>
-              setState((prev) => ({
-                ...prev,
-                saidaFixos: { ...prev.saidaFixos, [k]: t },
-              }))
-            }
-          />
-        </View>
-      ))}
-
-      {/* Pix (Nome+Valor dinâmico) */}
-      <View style={{ marginBottom: 12 }}>
-        <View style={styles.headerRow}>
-          <Label>Pix</Label>
-          <AddRemove
-            onAdd={() =>
-              setState((prev) => ({ ...prev, saidaPix: [...prev.saidaPix, { nome: "", valor: "" }] }))
-            }
-            onRemove={() =>
-              setState((prev) => ({
-                ...prev,
-                saidaPix:
-                  prev.saidaPix.length > 1 ? prev.saidaPix.slice(0, -1) : prev.saidaPix,
-              }))
-            }
-          />
-        </View>
-        <NameValueList
-          arr={state.saidaPix}
-          onChange={(next) => setState((prev) => ({ ...prev, saidaPix: next }))}
-        />
-      </View>
-
-      {/* Fiado (Nome+Valor dinâmico) */}
-      <View style={{ marginBottom: 12 }}>
-        <View style={styles.headerRow}>
-          <Label>Fiado</Label>
-          <AddRemove
-            onAdd={() =>
-              setState((prev) => ({
-                ...prev,
-                saidaFiados: [...prev.saidaFiados, { nome: "", valor: "" }],
-              }))
-            }
-            onRemove={() =>
-              setState((prev) => ({
-                ...prev,
-                saidaFiados:
-                  prev.saidaFiados.length > 1 ? prev.saidaFiados.slice(0, -1) : prev.saidaFiados,
-              }))
-            }
-          />
-        </View>
-        <NameValueList
-          arr={state.saidaFiados}
-          onChange={(next) => setState((prev) => ({ ...prev, saidaFiados: next }))}
-        />
-      </View>
-
-      {/* Raspinha (Saída) dinâmica */}
-      <View style={{ marginBottom: 12 }}>
-        <View style={styles.headerRow}>
-          <Label>Raspinha</Label>
-          <AddRemove
-            onAdd={() =>
-              setState((prev) => ({ ...prev, saidaRaspinhas: [...prev.saidaRaspinhas, ""] }))
-            }
-            onRemove={() =>
-              setState((prev) => ({
-                ...prev,
-                saidaRaspinhas:
-                  prev.saidaRaspinhas.length > 1
-                    ? prev.saidaRaspinhas.slice(0, -1)
-                    : prev.saidaRaspinhas,
-              }))
-            }
-          />
-        </View>
-        {state.saidaRaspinhas.map((v, i) => (
-          <View key={i} style={{ marginBottom: 8 }}>
-            <FieldMoney
-              value={v}
-              onChange={(t) => {
-                setState((prev) => {
-                  const next = prev.saidaRaspinhas.slice();
-                  next[i] = t;
-                  return { ...prev, saidaRaspinhas: next };
-                });
-              }}
-              placeholder={`Raspinha ${i + 1}`}
-            />
-          </View>
-        ))}
-      </View>
-
-      {/* Outros (Nome+Valor dinâmico) - por último */}
-      <View style={{ marginBottom: 12 }}>
-        <View style={styles.headerRow}>
-          <Label>Outros</Label>
-          <AddRemove
-            onAdd={() =>
-              setState((prev) => ({
-                ...prev,
-                saidaOutros: [...prev.saidaOutros, { nome: "", valor: "" }],
-              }))
-            }
-            onRemove={() =>
-              setState((prev) => ({
-                ...prev,
-                saidaOutros:
-                  prev.saidaOutros.length > 1 ? prev.saidaOutros.slice(0, -1) : prev.saidaOutros,
-              }))
-            }
-          />
-        </View>
-        <NameValueList
-          arr={state.saidaOutros}
-          onChange={(next) => setState((prev) => ({ ...prev, saidaOutros: next }))}
-        />
-      </View>
-
-      {/* Total Saída */}
-      <View style={styles.totalRow}>
-        <Text style={styles.totalLabel}>Total Saída</Text>
-        <Text style={styles.totalValue}>
-          {BRL(
-            state.saidaRetiradas.reduce((a, v) => a + toNumber(v), 0) +
-              Object.values(state.saidaFixos).reduce((a, v) => a + toNumber(v), 0) +
-              state.saidaRaspinhas.reduce((a, v) => a + toNumber(v), 0) +
-              state.saidaPix.reduce((a, it) => a + toNumber(it.valor), 0) +
-              state.saidaFiados.reduce((a, it) => a + toNumber(it.valor), 0) +
-              state.saidaOutros.reduce((a, it) => a + toNumber(it.valor), 0)
-          )}
-        </Text>
-      </View>
-    </View>
-  );
-}
-
-/** ==================== MAIN ==================== */
 export default function FechamentoScreen() {
-  const [state, setState] = useState<State>(blank());
-  const [tab, setTab] = useState<"entrada" | "saida">("entrada");
+  const [sec, setSec] = useState<"entrada" | "saida">("entrada");
+  const [userInfo, setUserInfo] = useState<{ nome?: string } | null>(null);
+
+  // ENTRADA
+  const [dinheiro, setDinheiro] = useState<string[]>([""]);
+  const [moedaEntrada, setMoedaEntrada] = useState("");
+  const [tarifa, setTarifa] = useState("");
+  const [bolaoEntrada, setBolaoEntrada] = useState("");
+  const [mktEntrada, setMktEntrada] = useState<string[]>([""]);
+  const [recebimentos, setRecebimentos] = useState<NameValue[]>([{ nome: "", valor: "" }]);
+  const [telesena, setTelesena] = useState("");
+  const [raspQtd, setRaspQtd] = useState({ "2.50": "0", "5.00": "0", "10.00": "0", "20.00": "0" });
+  const [emCaixa, setEmCaixa] = useState("");
+
+  // SAÍDA
+  const [retiradas, setRetiradas] = useState<string[]>([""]);
+  const [moedaSaida, setMoedaSaida] = useState("");
+  const [bolaoSaida, setBolaoSaida] = useState("");
+  const [mktSaida, setMktSaida] = useState<string[]>([""]);
+  const [pix, setPix] = useState<NameValue[]>([{ nome: "", valor: "" }]);     // livre nome + valor
+  const [fiado, setFiado] = useState<NameValue[]>([{ nome: "", valor: "" }]); // seletor + valor numérico
+  const [troca, setTroca] = useState("");
+  const [raspSaida, setRaspSaida] = useState<string[]>([""]);                 // apenas valor
+  const [outros, setOutros] = useState<NameValue[]>([{ nome: "", valor: "" }]);
+
+  // Modal seletor de clientes (para Recebimento e Fiado — Pix não usa)
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerSearch, setPickerSearch] = useState("");
+  const [pickerTarget, setPickerTarget] = useState<{ kind: "receb" | "fiado"; index: number } | null>(null);
+
+  const filteredClientes = CLIENTES.filter((n) =>
+    n.toLowerCase().includes(pickerSearch.trim().toLowerCase())
+  );
+  const openPicker = (kind: "receb" | "fiado", index: number) => {
+    setPickerTarget({ kind, index }); setPickerSearch(""); setPickerOpen(true);
+  };
+  const chooseClient = (nome: string) => {
+    if (!pickerTarget) return;
+    if (pickerTarget.kind === "receb") {
+      setRecebimentos((p) => p.map((x, i) => (i === pickerTarget.index ? { ...x, nome } : x)));
+    } else {
+      setFiado((p) => p.map((x, i) => (i === pickerTarget.index ? { ...x, nome } : x)));
+    }
+    setPickerOpen(false);
+  };
 
   useEffect(() => {
     (async () => {
       try {
-        const saved = await AsyncStorage.getItem(STORAGE_KEY);
-        if (saved) setState((s) => ({ ...s, ...JSON.parse(saved) }));
-      } catch {}
-      try {
         const auth = await AsyncStorage.getItem("auth:user");
-        if (auth) setState((s) => ({ ...s, userInfo: JSON.parse(auth) }));
+        if (auth) setUserInfo(JSON.parse(auth));
       } catch {}
-      // tenta sincronizar fila ao abrir
-      trySyncOutbox();
-      // escuta rede
-      const sub = NetInfo.addEventListener((st) => {
-        const online = !!st.isConnected && !!st.isInternetReachable;
-        if (online) trySyncOutbox();
-      });
-      return () => {
-        sub && sub();
-      };
     })();
   }, []);
 
-  const totals = useMemo(() => {
-    const somaArr = (arr?: string[]) =>
-      Array.isArray(arr) ? arr.reduce((a, v) => a + toNumber(v), 0) : 0;
-    const somaNV = (arr?: NameValue[]) =>
-      Array.isArray(arr) ? arr.reduce((a, it) => a + toNumber(it?.valor), 0) : 0;
-    const somaObj = (obj?: Record<string, string>) =>
-      obj ? Object.values(obj).reduce((a, v) => a + toNumber(v), 0) : 0;
-    const somaDen = DENOMS.reduce(
-      (acc, d) => acc + (Number(state.entradaDenomQtds[d.key]) || 0) * d.value,
-      0
-    );
+  const totais = useMemo(() => {
+    const somaArr = (arr: string[]) => arr.reduce((a, v) => a + toNumber(v), 0);
+    const somaNV = (arr: NameValue[]) => arr.reduce((a, it) => a + toNumber(it.valor), 0);
+
+    const raspEntradaTotal =
+      toNumber(raspQtd["2.50"]) * 2.5 +
+      toNumber(raspQtd["5.00"]) * 5 +
+      toNumber(raspQtd["10.00"]) * 10 +
+      toNumber(raspQtd["20.00"]) * 20;
+
     const entrada =
-      somaArr(state.entradaDinheiro) +
-      somaObj(state.entradaFixos) +
-      somaArr(state.entradaMkt) +
-      somaNV(state.entradaRecebimentos) +
-      somaDen;
+      somaArr(dinheiro) +
+      toNumber(moedaEntrada) +
+      toNumber(tarifa) +
+      toNumber(bolaoEntrada) +
+      somaArr(mktEntrada) +
+      toNumber(telesena) +
+      raspEntradaTotal +
+      toNumber(emCaixa);
+
     const saida =
-      somaArr(state.saidaRetiradas) +
-      somaObj(state.saidaFixos) +
-      somaArr(state.saidaRaspinhas) +
-      somaNV(state.saidaPix) +
-      somaNV(state.saidaFiados) +
-      somaNV(state.saidaOutros);
-    return { entrada, saida, resultado: entrada - saida };
-  }, [state]);
+      somaArr(retiradas) +
+      toNumber(moedaSaida) +
+      toNumber(bolaoSaida) +
+      somaArr(mktSaida) +
+      somaNV(pix) +
+      somaNV(fiado) +
+      toNumber(troca) +
+      somaArr(raspSaida) +
+      somaNV(outros);
 
-  async function salvarLocalEEnviarPlanilha() {
-    try {
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-      const payload = buildPayloadForScript(state);
-      await enqueue(payload);
-      await trySyncOutbox();
-      Alert.alert("Salvo ✅", "Dados salvos e enviados à planilha (se havia internet).");
-    } catch {
-      Alert.alert("Erro", "Não foi possível salvar/enfileirar.");
-    }
-  }
+    return {
+      entrada,
+      saida,
+      resultado: entrada - saida,
+      raspEntradaTotal,
+      subtotalEntrada: entrada,
+      subtotalSaida: saida,
+    };
+  }, [
+    dinheiro, moedaEntrada, tarifa, bolaoEntrada, mktEntrada, telesena, raspQtd, emCaixa,
+    retiradas, moedaSaida, bolaoSaida, mktSaida, pix, fiado, troca, raspSaida, outros,
+  ]);
 
-  function limparTudo() {
-    setState(blank());
-  }
+  useEffect(() => {
+    (async () => {
+      const saved = await AsyncStorage.getItem(STORAGE_KEY);
+      if (!saved) return;
+      try {
+        const st = JSON.parse(saved);
+        setDinheiro(st.dinheiro ?? [""]);
+        setMoedaEntrada(st.moedaEntrada ?? "");
+        setTarifa(st.tarifa ?? "");
+        setBolaoEntrada(st.bolaoEntrada ?? "");
+        setMktEntrada(st.mktEntrada ?? [""]);
+        setRecebimentos(st.recebimentos ?? [{ nome: "", valor: "" }]);
+        setTelesena(st.telesena ?? "");
+        setRaspQtd(st.raspQtd ?? { "2.50": "0", "5.00": "0", "10.00": "0", "20.00": "0" });
+        setEmCaixa(st.emCaixa ?? "");
 
-  // ======== CONFIRMAÇÃO DE ENVIO ========
-  async function enviarCsvEmail() {
-    Alert.alert(
-      "Confirmar envio",
-      "Deseja realmente enviar a planilha de fechamento para lotericabeltrao@gmail.com?",
-      [
-        { text: "Cancelar", style: "cancel" },
-        {
-          text: "Enviar",
-          style: "default",
-          onPress: async () => {
-            try {
-              // Enfileira + sincroniza com planilha também
-              const payload = buildPayloadForScript(state);
-              await enqueue(payload);
-              await trySyncOutbox();
+        setRetiradas(st.retiradas ?? [""]);
+        setMoedaSaida(st.moedaSaida ?? "");
+        setBolaoSaida(st.bolaoSaida ?? "");
+        setMktSaida(st.mktSaida ?? [""]);
+        setPix(st.pix ?? [{ nome: "", valor: "" }]);
+        setFiado(st.fiado ?? [{ nome: "", valor: "" }]);
+        setTroca(st.troca ?? "");
+        setRaspSaida(st.raspSaida ?? [""]);
+        setOutros(st.outros ?? [{ nome: "", valor: "" }]);
+      } catch {}
+    })();
+  }, []);
 
-              const csv = buildCsv(state);
-              const fileName = `fechamento_${hojeKey()}.csv`;
-              const recipients = [FIXO_EMAIL];
-              const assunto = `Fechamento de caixa - ${hojeKey()}`;
+  const salvar = async () => {
+    const state = {
+      dinheiro, moedaEntrada, tarifa, bolaoEntrada, mktEntrada, recebimentos, telesena, raspQtd, emCaixa,
+      retiradas, moedaSaida, bolaoSaida, mktSaida, pix, fiado, troca, raspSaida, outros,
+    };
+    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    Alert.alert("Salvo", "Fechamento salvo no dispositivo!");
+  };
 
-              if (Platform.OS === "web") {
-                // Web: baixa CSV + abre mailto
-                const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement("a");
-                a.href = url;
-                a.download = fileName;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
+  const limpar = () => {
+    setDinheiro([""]); setMoedaEntrada(""); setTarifa(""); setBolaoEntrada("");
+    setMktEntrada([""]); setRecebimentos([{ nome: "", valor: "" }]); setTelesena("");
+    setRaspQtd({ "2.50": "0", "5.00": "0", "10.00": "0", "20.00": "0" }); setEmCaixa("");
 
-                const corpo = `Segue o relatório em CSV (baixado no seu dispositivo).%0D%0A%0D%0AResumo:%0D%0A${csv
-                  .split("\n")
-                  .slice(0, 30)
-                  .join("%0D%0A")}`;
-                window.location.href = `mailto:${recipients.join(
-                  ","
-                )}?subject=${encodeURIComponent(assunto)}&body=${corpo}`;
-                Alert.alert("CSV gerado", "CSV baixado. Abra seu e-mail para anexar e enviar.");
-              } else {
-                const fileUri = FileSystem.cacheDirectory + fileName;
-                await FileSystem.writeAsStringAsync(fileUri, csv, {
-                  encoding: FileSystem.EncodingType.UTF8,
-                });
+    setRetiradas([""]); setMoedaSaida(""); setBolaoSaida(""); setMktSaida([""]);
+    setPix([{ nome: "", valor: "" }]); setFiado([{ nome: "", valor: "" }]); setTroca("");
+    setRaspSaida([""]); setOutros([{ nome: "", valor: "" }]);
 
-                const isAvailable = await MailComposer.isAvailableAsync();
-                if (isAvailable) {
-                  await MailComposer.composeAsync({
-                    recipients,
-                    subject: assunto,
-                    body: "Segue o relatório de fechamento do dia em anexo.\n\n",
-                    isHtml: false,
-                    attachments: [fileUri],
-                  });
-                } else if (await Sharing.isAvailableAsync()) {
-                  await Sharing.shareAsync(fileUri);
-                } else {
-                  Alert.alert("Ops", "Não foi possível compartilhar o CSV neste dispositivo.");
-                }
-              }
-            } catch (e) {
-              Alert.alert("Erro", "Não foi possível gerar/enviar o CSV.");
-            }
-          },
+    Alert.alert("Limpo", "Todos os campos foram limpos.");
+  };
+
+  const enviar = () => {
+    Alert.alert("Enviar", "Confirma enviar para a planilha?", [
+      { text: "Cancelar", style: "cancel" },
+      {
+        text: "OK",
+        onPress: async () => {
+          try {
+            const body = {
+              entradaDinheiro: dinheiro,
+              entradaFixos: { Moeda: moedaEntrada, Tarifa: tarifa, "Bolão": bolaoEntrada, Mkt: "", Telesena: telesena },
+              entradaMkt: mktEntrada,
+              entradaRecebimentos: recebimentos,
+              entradaDenomQtds: raspQtd,
+              emCaixa,
+              saidaRetiradas: retiradas,
+              saidaFixos: { Moeda: moedaSaida, "Bolão": bolaoSaida, Mkt: "", Troca: troca },
+              saidaPix: pix,
+              saidaFiados: fiado,
+              saidaOutros: outros,
+              saidaRaspinhaValores: raspSaida,
+              saidaMkt: mktSaida,
+            };
+            const res = await fetch(APPSCRIPT_URL, {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            });
+            const json = await res.json();
+            if (!json.ok) throw new Error(json.error || "Erro no servidor");
+            Alert.alert("Sucesso", "Fechamento enviado para a planilha!");
+          } catch (e: any) {
+            Alert.alert("Erro", String(e?.message || e));
+          }
         },
-      ]
-    );
-  }
+      },
+    ]);
+  };
 
   return (
-    <SafeAreaView style={s.safe}>
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-        <ScrollView contentContainerStyle={[s.container, { paddingBottom: 64 }]}>
-          {/* Cabeçalho bonito */}
-          <View style={{ borderRadius: 22, overflow: "hidden", marginBottom: 8 }}>
-            <LinearGradient
-              colors={["#E9EDFF", "#FFF7F7"]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={{ padding: 16 }}
-            >
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-                <Ionicons name="sparkles-outline" size={22} color="#7C83FD" />
-                <Text style={{ fontSize: 18, fontWeight: "800", color: "#27303F" }}>
-                  Fechamento de Caixa — {hojeKey()}
+    <SafeAreaView style={S.safe}>
+      <ScrollView contentContainerStyle={S.container}>
+        <Text style={S.titulo}>Fechamento</Text>
+
+        {/* Mensagem de boas-vindas */}
+        <View style={S.greetRow}>
+          <Text style={S.greetText}>
+            Olá, {userInfo?.nome || "Caixa"}, espero que você tenha um dia maravilhoso.
+          </Text>
+          <Ionicons name="heart" size={16} color={C.accent} />
+        </View>
+
+        {/* Abas internas */}
+        <View style={S.tabsRow}>
+          <Pressable style={[S.tabBtn, sec === "entrada" && S.tabBtnActive]} onPress={() => setSec("entrada")}>
+            <Text style={[S.tabText, sec === "entrada" && S.tabTextActive]}>Entrada</Text>
+          </Pressable>
+          <Pressable style={[S.tabBtn, sec === "saida" && S.tabBtnActive]} onPress={() => setSec("saida")}>
+            <Text style={[S.tabText, sec === "saida" && S.tabTextActive]}>Saída</Text>
+          </Pressable>
+        </View>
+
+        {/* ===== ENTRADA ===== */}
+        {sec === "entrada" && (
+          <>
+            {/* CARD GRANDE - formulário */}
+            <View style={S.card}>
+              <Text style={S.sectionHeader}>Lançamentos de Entrada</Text>
+
+              <Group
+                title="Dinheiro"
+                items={dinheiro.map((v) => ({ valor: v }))}
+                onAdd={() => setDinheiro((p) => [...p, ""])}
+                onRemove={() => setDinheiro((p) => (p.length > 1 ? p.slice(0, -1) : p))}
+                renderItem={(item, i) => (
+                  <NumericInput
+                    key={i}
+                    placeholder={`Dinheiro ${i + 1}`}
+                    value={dinheiro[i]}
+                    onChangeText={(t) => setDinheiro((p) => p.map((x, idx) => (idx === i ? t : x)))}
+                  />
+                )}
+              />
+
+              <Text style={S.label}>Moeda</Text>
+              <NumericInput value={moedaEntrada} onChangeText={setMoedaEntrada} />
+
+              <Text style={S.label}>Tarifa</Text>
+              <NumericInput value={tarifa} onChangeText={setTarifa} />
+
+              <Text style={S.label}>Bolão</Text>
+              <NumericInput value={bolaoEntrada} onChangeText={setBolaoEntrada} />
+
+              <Group
+                title="Mkt"
+                items={mktEntrada.map((v) => ({ valor: v }))}
+                onAdd={() => setMktEntrada((p) => [...p, ""])}
+                onRemove={() => setMktEntrada((p) => (p.length > 1 ? p.slice(0, -1) : p))}
+                renderItem={(item, i) => (
+                  <NumericInput
+                    key={i}
+                    placeholder={`Mkt ${i + 1}`}
+                    value={mktEntrada[i]}
+                    onChangeText={(t) => setMktEntrada((p) => p.map((x, idx) => (idx === i ? t : x)))}
+                  />
+                )}
+              />
+
+              {/* Recebimento com seletor de cliente (nome não digitável) + valor numérico */}
+              <ClientValueGroup
+                title="Recebimento"
+                items={recebimentos}
+                setItems={setRecebimentos}
+                onPick={openPicker}
+                kind="receb"
+              />
+
+              <Text style={S.label}>Telesena</Text>
+              <NumericInput value={telesena} onChangeText={setTelesena} />
+
+              {/* Raspinha ENTRADA — compacto e sem quebra */}
+              <View style={{ marginBottom: 8 }}>
+                <View style={S.groupHeader}><Text style={S.groupTitle}>Raspinha (quantidades)</Text><View /></View>
+
+                {([
+                  { key: "2.50", label: "2,50", mult: 2.5 },
+                  { key: "5.00", label: "5,00", mult: 5 },
+                  { key: "10.00", label: "10,00", mult: 10 },
+                  { key: "20.00", label: "20,00", mult: 20 },
+                ] as const).map(({ key, label, mult }) => {
+                  const q = Number(raspQtd[key] || 0);
+                  return (
+                    <View key={key} style={{ marginBottom: 4 }}>
+                      <View
+                        style={{
+                          flexDirection: "row",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          flexWrap: "nowrap" as any,
+                        }}
+                      >
+                        <Text numberOfLines={1} style={[S.groupTitle, { width: 72 }]}>R$ {label}</Text>
+
+                        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
+                          <Pressable
+                            style={S.smallBtn}
+                            onPress={() => setRaspQtd((p) => ({ ...p, [key]: String(Math.max(0, (Number(p[key] || 0) - 1) | 0)) }))}
+                          >
+                            <Ionicons name="remove-circle" size={20} color={C.accent} />
+                          </Pressable>
+
+                          <View style={{ width: 80, marginHorizontal: 4 }}>
+                            <TextInput
+                              style={[S.input, S.inputCompact]}
+                              keyboardType="numeric"
+                              inputMode="numeric"
+                              placeholder="Qtd"
+                              value={String(raspQtd[key] || "")}
+                              onChangeText={(t) => {
+                                if (t === "") return setRaspQtd((p) => ({ ...p, [key]: "" }));
+                                const n = Math.max(0, parseInt(t.replace(/\D+/g, "") || "0", 10));
+                                setRaspQtd((p) => ({ ...p, [key]: String(n) }));
+                              }}
+                            />
+                          </View>
+
+                          <Pressable
+                            style={S.smallBtn}
+                            onPress={() => setRaspQtd((p) => ({ ...p, [key]: String(((Number(p[key] || 0) + 1) | 0)) }))}
+                          >
+                            <Ionicons name="add-circle" size={20} color={C.accent} />
+                          </Pressable>
+                        </View>
+
+                        <View style={{ width: 110, marginLeft: 8 }}>
+                          <TextInput
+                            style={[S.input, S.inputCompact, { opacity: 0.6 }]}
+                            editable={false}
+                            value={currency(q * mult)}
+                          />
+                        </View>
+                      </View>
+                    </View>
+                  );
+                })}
+
+                <Text style={[S.label, { marginTop: 2 }]}>
+                  Total Raspinha: {currency(
+                    (Number(raspQtd["2.50"] || 0) * 2.5) +
+                    (Number(raspQtd["5.00"]  || 0) * 5) +
+                    (Number(raspQtd["10.00"] || 0) * 10) +
+                    (Number(raspQtd["20.00"] || 0) * 20)
+                  )}
                 </Text>
               </View>
-              {!!state.userInfo?.nome && (
-                <Text style={{ color: "#6B7280", marginTop: 6 }}>
-                  Caixa: {state.userInfo?.nome} ({state.userInfo?.user})
-                </Text>
+
+              <Text style={S.label}>Em Caixa</Text>
+              <NumericInput value={emCaixa} onChangeText={setEmCaixa} />
+            </View>
+
+            {/* CARD PEQUENO - resumo desta aba + totais gerais */}
+            <View style={S.cardSmall}>
+              <Text style={S.sectionHeader}>Resumo — Entrada</Text>
+              <View style={S.resumoRow}><Text style={S.resumoLabel}>Subtotal Entrada</Text><Text style={S.resumoValor}>{currency(totais.subtotalEntrada)}</Text></View>
+              <View style={S.resumoRow}><Text style={S.resumoLabel}>Total Saída</Text><Text style={S.resumoValor}>{currency(totais.saida)}</Text></View>
+              <View style={S.resumoRow}><Text style={S.resumoLabel}>Resultado</Text><Text style={S.resumoValor}>{currency(totais.resultado)}</Text></View>
+            </View>
+          </>
+        )}
+
+        {/* ===== SAÍDA ===== */}
+        {sec === "saida" && (
+          <>
+            {/* CARD GRANDE - formulário */}
+            <View style={S.card}>
+              <Text style={S.sectionHeader}>Lançamentos de Saída</Text>
+
+              <Group
+                title="Retirada"
+                items={retiradas.map((v) => ({ valor: v }))}
+                onAdd={() => setRetiradas((p) => [...p, ""])}
+                onRemove={() => setRetiradas((p) => (p.length > 1 ? p.slice(0, -1) : p))}
+                renderItem={(item, i) => (
+                  <NumericInput
+                    key={i}
+                    placeholder={`Retirada ${i + 1}`}
+                    value={retiradas[i]}
+                    onChangeText={(t) => setRetiradas((p) => p.map((x, idx) => (idx === i ? t : x)))}
+                  />
+                )}
+              />
+
+              <Text style={S.label}>Moeda</Text>
+              <NumericInput value={moedaSaida} onChangeText={setMoedaSaida} />
+
+              <Text style={S.label}>Bolão</Text>
+              <NumericInput value={bolaoSaida} onChangeText={setBolaoSaida} />
+
+              <Group
+                title="Mkt"
+                items={mktSaida.map((v) => ({ valor: v }))}
+                onAdd={() => setMktSaida((p) => [...p, ""])}
+                onRemove={() => setMktSaida((p) => (p.length > 1 ? p.slice(0, -1) : p))}
+                renderItem={(item, i) => (
+                  <NumericInput
+                    key={i}
+                    placeholder={`Mkt ${i + 1}`}
+                    value={mktSaida[i]}
+                    onChangeText={(t) => setMktSaida((p) => p.map((x, idx) => (idx === i ? t : x)))}
+                  />
+                )}
+              />
+
+              <Text style={S.label}>Troca</Text>
+              <NumericInput value={troca} onChangeText={setTroca} />
+
+              {/* Pix (nome texto + valor numérico) */}
+              <NameValueGroup title="Pix" items={pix} setItems={setPix} forceNumericValue />
+
+              {/* Fiado (seletor de clientes + valor numérico) */}
+              <ClientValueGroup title="Fiado" items={fiado} setItems={setFiado} onPick={openPicker} kind="fiado" />
+
+              {/* Raspinha (Saída) — apenas valor, dinâmico */}
+              <Group
+  title="Raspinha"
+  items={raspSaida.map((v) => ({ valor: v }))} // 👈 mapeia string -> {valor}
+  onAdd={() => setRaspSaida((p) => [...p, ""])}
+  onRemove={() => setRaspSaida((p) => (p.length > 1 ? p.slice(0, -1) : p))}
+  renderItem={(item, i) => (
+    <NumericInput
+      key={i}
+      placeholder={`Raspinha ${i + 1}`}
+      value={item.valor} // 👈 usa item.valor (evita [object Object])
+      onChangeText={(t) =>
+        setRaspSaida((p) => p.map((x, idx) => (idx === i ? t : x)))
+      }
+    />
+  )}
+/>
+
+
+              {/* Outros (nome texto + valor numérico) */}
+              <NameValueGroup title="Outros" items={outros} setItems={setOutros} forceNumericValue />
+            </View>
+
+            {/* CARD PEQUENO - resumo desta aba + totais gerais */}
+            <View style={S.cardSmall}>
+              <Text style={S.sectionHeader}>Resumo — Saída</Text>
+              <View style={S.resumoRow}><Text style={S.resumoLabel}>Subtotal Saída</Text><Text style={S.resumoValor}>{currency(totais.subtotalSaida)}</Text></View>
+              <View style={S.resumoRow}><Text style={S.resumoLabel}>Total Entrada</Text><Text style={S.resumoValor}>{currency(totais.entrada)}</Text></View>
+              <View style={S.resumoRow}><Text style={S.resumoLabel}>Resultado</Text><Text style={S.resumoValor}>{currency(totais.resultado)}</Text></View>
+            </View>
+          </>
+        )}
+
+        {/* Botões de ação */}
+        <View style={S.actionButtonsRow}>
+          <Pressable style={S.actionButton} onPress={salvar}>
+            <Ionicons name="save-outline" size={18} color={C.accent} style={{ marginRight: 6 }} />
+            <Text style={S.actionButtonText}>Salvar</Text>
+          </Pressable>
+          <Pressable style={S.actionButton} onPress={limpar}>
+            <Ionicons name="trash-outline" size={18} color={C.accent} style={{ marginRight: 6 }} />
+            <Text style={S.actionButtonText}>Limpar</Text>
+          </Pressable>
+          <Pressable style={S.actionButton} onPress={enviar}>
+            <Ionicons name="send-outline" size={18} color={C.accent} style={{ marginRight: 6 }} />
+            <Text style={S.actionButtonText}>Enviar</Text>
+          </Pressable>
+        </View>
+      </ScrollView>
+
+      {/* Modal seletor de clientes (usado por Recebimento e Fiado) */}
+      <Modal visible={pickerOpen} transparent animationType="fade" onRequestClose={() => setPickerOpen(false)}>
+        <View style={S.modalBackdrop}>
+          <View style={S.modalCard}>
+            <Text style={[S.label, { marginTop: 0 }]}>Selecionar cliente</Text>
+            <TextInput
+              style={S.searchInput}
+              placeholder="Buscar nome…"
+              placeholderTextColor="#9c6e82"
+              value={pickerSearch}
+              onChangeText={setPickerSearch}
+            />
+            <ScrollView>
+              {filteredClientes.map((nome) => (
+                <Pressable key={nome} style={S.chip} onPress={() => chooseClient(nome)}>
+                  <Text style={S.chipText}>{nome}</Text>
+                </Pressable>
+              ))}
+              {filteredClientes.length === 0 && (
+                <Text style={{ color: C.textDark, padding: 8 }}>Nenhum cliente encontrado.</Text>
               )}
-            </LinearGradient>
-          </View>
-
-          {/* Abas Entrada|Saída */}
-          <View style={styles.tabsWrap}>
-            <Pressable
-              onPress={() => setTab("entrada")}
-              style={[styles.tabBtn, tab === "entrada" && styles.tabBtnActive]}
-            >
-              <Text style={[styles.tabText, tab === "entrada" && styles.tabTextActive]}>Entrada</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => setTab("saida")}
-              style={[styles.tabBtn, tab === "saida" && styles.tabBtnActive]}
-            >
-              <Text style={[styles.tabText, tab === "saida" && styles.tabTextActive]}>Saída</Text>
-            </Pressable>
-          </View>
-
-          {tab === "entrada" ? (
-            <EntradaView state={state} setState={setState} />
-          ) : (
-            <SaidaView state={state} setState={setState} />
-          )}
-
-          {/* Resumo + Botões */}
-          <View style={s.card}>
-            <Text style={{ color: "#1F2A37", fontSize: 16, fontWeight: "800", marginBottom: 6 }}>
-              Resumo
-            </Text>
-            <View style={styles.totalRow}>
-              <Text style={styles.totalLabel}>Total Entrada</Text>
-              <Text style={styles.totalValue}>{BRL(totals.entrada)}</Text>
-            </View>
-            <View style={styles.totalRow}>
-              <Text style={styles.totalLabel}>Total Saída</Text>
-              <Text style={styles.totalValue}>{BRL(totals.saida)}</Text>
-            </View>
-            <View style={styles.totalRow}>
-              <Text style={styles.totalLabel}>Resultado</Text>
-              <Text style={styles.totalValue}>{BRL(totals.resultado)}</Text>
-            </View>
-            <View style={{ height: 12 }} />
-            <View style={{ flexDirection: "row", gap: 10 }}>
-              <Pressable
-                style={[
-                  s.btn,
-                  {
-                    flex: 1,
-                    borderWidth: 1,
-                    borderColor: "#E7EAF6",
-                    backgroundColor: "#FFFFFF",
-                    borderRadius: 999,
-                    flexDirection: "row",
-                    gap: 8,
-                    justifyContent: "center",
-                    paddingVertical: 12,
-                  },
-                ]}
-                onPress={salvarLocalEEnviarPlanilha}
-              >
-                <MaterialCommunityIcons name="content-save-outline" size={18} color="#7C83FD" />
-                <Text style={{ color: "#7C83FD", fontWeight: "800" }}>Salvar</Text>
-              </Pressable>
-              <Pressable
-                style={[
-                  s.btn,
-                  {
-                    flex: 1,
-                    borderWidth: 1,
-                    borderColor: "#FEE2E2",
-                    backgroundColor: "#FFFFFF",
-                    borderRadius: 999,
-                    flexDirection: "row",
-                    gap: 8,
-                    justifyContent: "center",
-                    paddingVertical: 12,
-                  },
-                ]}
-                onPress={limparTudo}
-              >
-                <MaterialCommunityIcons name="broom" size={18} color="#EF4444" />
-                <Text style={{ color: "#EF4444", fontWeight: "800" }}>Limpar</Text>
-              </Pressable>
-              <Pressable
-                style={[s.btn, s.btnSolid, { flex: 1, flexDirection: "row", gap: 8, borderRadius: 999, justifyContent: "center", paddingVertical: 12 }]}
-                onPress={enviarCsvEmail}
-              >
-                <MaterialCommunityIcons name="send-outline" size={18} color="#fff" />
-                <Text style={s.btnText}>Enviar</Text>
+            </ScrollView>
+            <View style={{ flexDirection: "row", justifyContent: "flex-end", marginTop: 8 }}>
+              <Pressable style={S.tabBtn} onPress={() => setPickerOpen(false)}>
+                <Text style={S.tabText}>Fechar</Text>
               </Pressable>
             </View>
           </View>
-        </ScrollView>
-      </KeyboardAvoidingView>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
 
-const styles = StyleSheet.create({
-  sectionTitle: { color: "#111827", fontWeight: "800", fontSize: 18, marginBottom: 8 },
-  headerRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 6 },
-  fieldLabel: { color: "#655ad8", fontWeight: "800", marginBottom: 6, fontSize: 16 },
-  input: {
-    backgroundColor: "#FAFBFF",
-    borderColor: "#E7EAF6",
-    borderWidth: 1,
-    borderRadius: 16,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    color: "#1F2A37",
-  },
-  rowNV: { flexDirection: "row", alignItems: "flex-end", gap: 8, marginBottom: 10 },
-  circleBtn: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", backgroundColor: "#E9EDFF" },
-  circleBtnText: { color: "#5D6BFF", fontSize: 18, fontWeight: "800", lineHeight: 18 },
-  counter: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", borderColor: "#E7EAF6", borderWidth: 1, borderRadius: 16, paddingHorizontal: 12, paddingVertical: 8, backgroundColor: "#FFFFFF", marginBottom: 8, gap: 12 },
-  counterQty: { color: "#1F2A37", fontWeight: "800", width: 36, textAlign: "center" },
-  totalRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 6 },
-  totalLabel: { color: "#6B7280", fontWeight: "700" },
-  totalValue: { color: "#111827", fontWeight: "800" },
-  tabsWrap: {
-    flexDirection: "row",
-    backgroundColor: "#EEF1FF",
-    padding: 6,
-    borderRadius: 999,
-    marginBottom: 12,
-  },
-  tabBtn: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 999,
-    alignItems: "center",
-  },
-  tabBtnActive: {
-    backgroundColor: "#655ad8",
-  },
-  tabText: { color: "#655ad8", fontWeight: "800" },
-  tabTextActive: { color: "#fff", fontWeight: "800" },
-});
+/** ===== Componentes auxiliares ===== */
+
+function Group({
+  title, items, onAdd, onRemove, renderItem,
+}: { title: string; items: any[]; onAdd: () => void; onRemove: () => void; renderItem: (item: any, i: number) => React.ReactNode; }) {
+  return (
+    <View style={S.groupCard}>
+      <View style={S.groupHeader}>
+        <Text style={S.groupTitle}>{title}</Text>
+        <View style={S.groupBtns}>
+          <Pressable style={S.smallBtn} onPress={onRemove}>
+            <Ionicons name="remove-circle" size={20} color={C.accent} />
+          </Pressable>
+          <Pressable style={S.smallBtn} onPress={onAdd}>
+            <Ionicons name="add-circle" size={20} color={C.accent} />
+          </Pressable>
+        </View>
+      </View>
+      {items.map((it, i) => renderItem(it, i))}
+    </View>
+  );
+}
+
+/** Input numérico padrão com sanitização */
+function NumericInput({
+  value,
+  onChangeText,
+  placeholder,
+}: {
+  value: string;
+  onChangeText: (v: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <TextInput
+      style={S.input}
+      keyboardType="numeric"
+      inputMode="decimal"
+      placeholder={placeholder}
+      value={value}
+      onChangeText={(t) => onChangeText(sanitizeNumText(t))}
+    />
+  );
+}
+
+/** Nome + Valor
+ * - Nome é TEXTO livre (Pix/Outros)
+ * - Valor é NUMÉRICO (sanitize)
+ */
+function NameValueGroup({
+  title, items, setItems, forceNumericValue,
+}: {
+  title: string;
+  items: NameValue[];
+  setItems: React.Dispatch<React.SetStateAction<NameValue[]>>;
+  forceNumericValue?: boolean; // quando true, valor passa por sanitização numérica
+}) {
+  return (
+    <View style={S.groupCard}>
+      <View style={S.groupHeader}>
+        <Text style={S.groupTitle}>{title}</Text>
+        <View style={S.groupBtns}>
+          <Pressable style={S.smallBtn} onPress={() => setItems((p) => (p.length > 1 ? p.slice(0, -1) : p))}>
+            <Ionicons name="remove-circle" size={20} color={C.accent} />
+          </Pressable>
+          <Pressable style={S.smallBtn} onPress={() => setItems((p) => [...p, { nome: "", valor: "" }])}>
+            <Ionicons name="add-circle" size={20} color={C.accent} />
+          </Pressable>
+        </View>
+      </View>
+
+      {items.map((it, i) => (
+        <View key={i} style={S.row2}>
+          <View style={S.col}>
+            <TextInput
+              style={S.input}
+              placeholder="Nome"
+              value={it.nome}
+              onChangeText={(t) => setItems((p) => p.map((x, idx) => (idx === i ? { ...x, nome: t } : x)))}
+            />
+          </View>
+          <View style={S.colLast}>
+            <TextInput
+              style={S.input}
+              keyboardType="numeric"
+              inputMode="decimal"
+              placeholder="Valor"
+              value={it.valor}
+              onChangeText={(t) =>
+                setItems((p) =>
+                  p.map((x, idx) =>
+                    idx === i ? { ...x, valor: forceNumericValue ? sanitizeNumText(t) : t }
+                                 : x
+                  )
+                )
+              }
+            />
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+/** Nome (seletor de clientes) + Valor numérico — para Recebimento e Fiado */
+function ClientValueGroup({
+  title, items, setItems, onPick, kind,
+}: {
+  title: string;
+  items: NameValue[];
+  setItems: React.Dispatch<React.SetStateAction<NameValue[]>>;
+  onPick: (kind: "receb" | "fiado", index: number) => void;
+  kind: "receb" | "fiado";
+}) {
+  return (
+    <View style={S.groupCard}>
+      <View style={S.groupHeader}>
+        <Text style={S.groupTitle}>{title}</Text>
+        <View style={S.groupBtns}>
+          <Pressable style={S.smallBtn} onPress={() => setItems((p) => (p.length > 1 ? p.slice(0, -1) : p))}>
+            <Ionicons name="remove-circle" size={20} color={C.accent} />
+          </Pressable>
+          <Pressable style={S.smallBtn} onPress={() => setItems((p) => [...p, { nome: "", valor: "" }])}>
+            <Ionicons name="add-circle" size={20} color={C.accent} />
+          </Pressable>
+        </View>
+      </View>
+
+      {items.map((it, i) => (
+        <View key={i} style={S.row2}>
+          <View style={S.col}>
+            {/* Nome não digitável: abre seletor */}
+            <Pressable style={S.nameBox} onPress={() => onPick(kind, i)}>
+              {it.nome ? (
+                <Text style={S.nameBoxText}>{it.nome}</Text>
+              ) : (
+                <Text style={S.nameBoxPlaceholder}>Selecionar cliente…</Text>
+              )}
+            </Pressable>
+          </View>
+          <View style={S.colLast}>
+            <TextInput
+              style={S.input}
+              keyboardType="numeric"
+              inputMode="decimal"
+              placeholder="Valor"
+              value={it.valor}
+              onChangeText={(t) => setItems((p) => p.map((x, idx) => (idx === i ? { ...x, valor: sanitizeNumText(t) } : x)))}
+            />
+          </View>
+        </View>
+      ))}
+    </View>
+  );
+}
