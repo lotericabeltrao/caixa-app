@@ -11,7 +11,7 @@ import {
     View,
 } from "react-native";
 
-const APPSCRIPT_URL = "https://script.google.com/macros/s/AKfycbzjcFjoIAp3DrSCHF_NNFsFDtokDNTlMk3Ql_Ayp8wUq0NixFLUGady7F3RsMuAjRIi/exec";
+const APPSCRIPT_URL = "https://script.google.com/macros/s/AKfycbxNG2qw7WJ5UxtLfA681FfAy4zk6mg4zrZOMWx15qUPQRvjHG1haZW2KyWCI756iyn-/exec";
 
 const C = { bg: "#ffdbd7", accent: "#dd9abaff", textDark: "#832d69ff", white: "#ffffff", border: "#dd9abaff" };
 

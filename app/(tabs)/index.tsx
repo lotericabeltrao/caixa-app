@@ -1,22 +1,22 @@
-import { Ionicons } from "@expo/vector-icons";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useEffect, useMemo, useState } from "react";
 import {
-  Alert,
-  Modal,
-  Platform,
-  Pressable,
   SafeAreaView,
   ScrollView,
-  StyleSheet,
+  View,
   Text,
   TextInput,
+  Pressable,
+  Alert,
+  Platform,
+  StyleSheet,
   TextStyle,
-  View,
+  Modal,
 } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { Ionicons } from "@expo/vector-icons";
 
 /** Ajuste se usar Apps Script */
-const APPSCRIPT_URL = "https://script.google.com/macros/s/AKfycbzjcFjoIAp3DrSCHF_NNFsFDtokDNTlMk3Ql_Ayp8wUq0NixFLUGady7F3RsMuAjRIi/exec";
+const APPSCRIPT_URL = "https://script.google.com/macros/s/AKfycbxNG2qw7WJ5UxtLfA681FfAy4zk6mg4zrZOMWx15qUPQRvjHG1haZW2KyWCI756iyn-/exec";
 const STORAGE_KEY = "";
 
 /** Lista fixa de clientes (fiado/recebimento) */
@@ -33,13 +33,27 @@ const toNumber = (v: any) =>
   typeof v === "number" ? v : parseFloat(String(v ?? "").replace(",", ".").replace(/[^\d.-]/g, "")) || 0;
 const currency = (n: number) => (n || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
-/** Sanitiza texto para numérico (mantém vazio) */
-function sanitizeNumText(t: string) {
+/** Sanitiza texto para numérico (mantém vazio) — com suporte opcional a negativo */
+function sanitizeNumText(t: string, allowNegative = false) {
   if (t.trim() === "") return "";
-  const cleaned = t.replace(",", ".").replace(/[^\d.]/g, "");
-  const parts = cleaned.split(".");
-  const normalized = parts.length > 2 ? `${parts[0]}.${parts.slice(1).join("")}` : cleaned;
-  return normalized;
+  let s = t.replace(",", ".").replace(/[^\d\.\-]/g, ""); // mantém dígitos, ponto e hífen
+
+  // mantém no máximo um ponto decimal
+  const parts = s.split(".");
+  if (parts.length > 2) s = parts[0] + "." + parts.slice(1).join("");
+
+  if (allowNegative) {
+    // permite '-' apenas no início
+    const startsWithMinus = s.startsWith("-");
+    s = (startsWithMinus ? "-" : "") + s.replace(/-/g, "");
+  } else {
+    s = s.replace(/-/g, "");
+  }
+
+  // permite o usuário deixar apenas '-' temporariamente enquanto digita
+  if (allowNegative && s === "-") return "-";
+
+  return s;
 }
 
 /** Estilos */
@@ -245,7 +259,7 @@ export default function FechamentoScreen() {
       somaArr(mktEntrada) +
       toNumber(telesena) +
       raspEntradaTotal +
-      toNumber(emCaixa);
+      toNumber(emCaixa); // pode ser negativo
 
     const saida =
       somaArr(retiradas) +
@@ -327,8 +341,15 @@ export default function FechamentoScreen() {
       {
         text: "OK",
         onPress: async () => {
-          try {
+          const authStr = await
+AsyncStorage.getItem("auth:user")
+let nome ="Caixa";
+if(authStr) { try{  const a = JSON.parse(authStr)
+  if (a?.nome) nome = a.nome;
+} catch {}
+}          try {
             const body = {
+              nome,
               entradaDinheiro: dinheiro,
               entradaFixos: { Moeda: moedaEntrada, Tarifa: tarifa, "Bolão": bolaoEntrada, Mkt: "", Telesena: telesena },
               entradaMkt: mktEntrada,
@@ -340,15 +361,24 @@ export default function FechamentoScreen() {
               saidaPix: pix,
               saidaFiados: fiado,
               saidaOutros: outros,
-              saidaRaspinhaValores: raspSaida,
+              saidaRaspinhaValores: raspSaida, // raspinha saída = só valores
               saidaMkt: mktSaida,
             };
             const res = await fetch(APPSCRIPT_URL, {
               method: "POST", headers: { "Content-Type": "application/json" },
               body: JSON.stringify(body),
             });
-            const json = await res.json();
-            if (!json.ok) throw new Error(json.error || "Erro no servidor");
+            const text = await res.text();
+            let json: any = {};
+            try { json = JSON.parse(text); } catch {}
+            if (!res.ok) {
+              Alert.alert("HTTP erro", `Status: ${res.status}\n${text}`);
+              return;
+            }
+            if (!json.ok) {
+              Alert.alert("Servidor disse NÃO", String(json.error || text));
+              return;
+            }
             Alert.alert("Sucesso", "Fechamento enviado para a planilha!");
           } catch (e: any) {
             Alert.alert("Erro", String(e?.message || e));
@@ -397,7 +427,7 @@ export default function FechamentoScreen() {
                   <NumericInput
                     key={i}
                     placeholder={`Dinheiro ${i + 1}`}
-                    value={dinheiro[i]}
+                    value={item.valor}
                     onChangeText={(t) => setDinheiro((p) => p.map((x, idx) => (idx === i ? t : x)))}
                   />
                 )}
@@ -421,7 +451,7 @@ export default function FechamentoScreen() {
                   <NumericInput
                     key={i}
                     placeholder={`Mkt ${i + 1}`}
-                    value={mktEntrada[i]}
+                    value={item.valor}
                     onChangeText={(t) => setMktEntrada((p) => p.map((x, idx) => (idx === i ? t : x)))}
                   />
                 )}
@@ -516,7 +546,7 @@ export default function FechamentoScreen() {
               </View>
 
               <Text style={S.label}>Em Caixa</Text>
-              <NumericInput value={emCaixa} onChangeText={setEmCaixa} />
+              <NumericInput value={emCaixa} onChangeText={setEmCaixa} allowNegative />
             </View>
 
             {/* CARD PEQUENO - resumo desta aba + totais gerais */}
@@ -545,7 +575,7 @@ export default function FechamentoScreen() {
                   <NumericInput
                     key={i}
                     placeholder={`Retirada ${i + 1}`}
-                    value={retiradas[i]}
+                    value={item.valor}
                     onChangeText={(t) => setRetiradas((p) => p.map((x, idx) => (idx === i ? t : x)))}
                   />
                 )}
@@ -566,7 +596,7 @@ export default function FechamentoScreen() {
                   <NumericInput
                     key={i}
                     placeholder={`Mkt ${i + 1}`}
-                    value={mktSaida[i]}
+                    value={item.valor}
                     onChangeText={(t) => setMktSaida((p) => p.map((x, idx) => (idx === i ? t : x)))}
                   />
                 )}
@@ -583,22 +613,19 @@ export default function FechamentoScreen() {
 
               {/* Raspinha (Saída) — apenas valor, dinâmico */}
               <Group
-  title="Raspinha"
-  items={raspSaida.map((v) => ({ valor: v }))} // 👈 mapeia string -> {valor}
-  onAdd={() => setRaspSaida((p) => [...p, ""])}
-  onRemove={() => setRaspSaida((p) => (p.length > 1 ? p.slice(0, -1) : p))}
-  renderItem={(item, i) => (
-    <NumericInput
-      key={i}
-      placeholder={`Raspinha ${i + 1}`}
-      value={item.valor} // 👈 usa item.valor (evita [object Object])
-      onChangeText={(t) =>
-        setRaspSaida((p) => p.map((x, idx) => (idx === i ? t : x)))
-      }
-    />
-  )}
-/>
-
+                title="Raspinha"
+                items={raspSaida.map((v) => ({ valor: v }))} // mapeia string -> { valor }
+                onAdd={() => setRaspSaida((p) => [...p, ""])}
+                onRemove={() => setRaspSaida((p) => (p.length > 1 ? p.slice(0, -1) : p))}
+                renderItem={(item, i) => (
+                  <NumericInput
+                    key={i}
+                    placeholder={`Raspinha ${i + 1}`}
+                    value={item.valor}
+                    onChangeText={(t) => setRaspSaida((p) => p.map((x, idx) => (idx === i ? t : x)))}
+                  />
+                )}
+              />
 
               {/* Outros (nome texto + valor numérico) */}
               <NameValueGroup title="Outros" items={outros} setItems={setOutros} forceNumericValue />
@@ -693,10 +720,12 @@ function NumericInput({
   value,
   onChangeText,
   placeholder,
+  allowNegative,
 }: {
   value: string;
   onChangeText: (v: string) => void;
   placeholder?: string;
+  allowNegative?: boolean;
 }) {
   return (
     <TextInput
@@ -705,10 +734,11 @@ function NumericInput({
       inputMode="decimal"
       placeholder={placeholder}
       value={value}
-      onChangeText={(t) => onChangeText(sanitizeNumText(t))}
+      onChangeText={(t) => onChangeText(sanitizeNumText(t, allowNegative))}
     />
   );
 }
+
 
 /** Nome + Valor
  * - Nome é TEXTO livre (Pix/Outros)
@@ -820,3 +850,4 @@ function ClientValueGroup({
     </View>
   );
 }
+
