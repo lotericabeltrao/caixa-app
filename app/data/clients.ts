@@ -1,34 +1,9 @@
-// app/data/clients.ts
-export type ClienteFiado = { id: string; nome: string };
 
-export const CLIENTES_FIADO: ClienteFiado[] = [
-  { id: "CF001", nome: "Mamão" },
-  { id: "CF002", nome: "Galante" },
-  { id: "CF003", nome: "Colaço" },
-  { id: "CF004", nome: "Eugênio" },
-  { id: "CF005", nome: "Lô" },
-  { id: "CF006", nome: "José XCAP" },
-  { id: "CF007", nome: "Irineu" },
-  { id: "CF008", nome: "Adilson" },
-  { id: "CF009", nome: "Antônio Ribeiro" },
-  { id: "CF010", nome: "Josué" },
-  { id: "CF011", nome: "Paulo Borges" },
-  { id: "CF012", nome: "Jacqueline" },
-  { id: "CF013", nome: "Pai" },
-  { id: "CF014", nome: "Lucas" },
-  { id: "CF015", nome: "Adriana" },
-  { id: "CF016", nome: "Shirley" },
-  { id: "CF017", nome: "Jair" },
-  { id: "CF018", nome: "Sonia P" },
-  { id: "CF019", nome: "Paião" },
-  { id: "CF020", nome: "Cardoso" },
-  { id: "CF021", nome: "Volante" },
-  { id: "CF022", nome: "Machado" },
-  { id: "CF023", nome: "Henrique" },
-  { id: "CF024", nome: "Giva" },
-  { id: "CF025", nome: "Polato" },
-  { id: "CF026", nome: "Peletiero" },
-  { id: "CF027", nome: "Minha Grife" },
-  { id: "CF028", nome: "Instaladora Andrade" },
-  { id: "CF029", nome: "Volpato" },
+// app/constants/clientes.ts
+export const CLIENTES = [
+  "Mamão","Galante","Colaço","Eugênio","Lô","José XCAP","Irineu","Adilson","Antônio Ribeiro","Josué",
+  "Paulo Borges","Jacqueline","Pai","Lucas","Adriana","Shirley","Jair","Sonia P","Paião","Cardoso",
+  "Volante","Machado","Henrique","Giva","Polato","Peletiero","Minha Grife","Instaladora Andrade",
+  "Libaneo","Volpato","Bruna","Kety","Mychely","Edvaldo","Jesuel","Mirtes","Julio","Vera","Zuneide",
+  "Celinho","Joelcio","Mauro","Jane","Claudinha","Barão"
 ];

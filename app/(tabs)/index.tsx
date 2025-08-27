@@ -1,3 +1,4 @@
+// app/(tabs)/index.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import {
   SafeAreaView,
@@ -7,847 +8,977 @@ import {
   TextInput,
   Pressable,
   Alert,
-  Platform,
-  StyleSheet,
-  TextStyle,
-  Modal,
 } from "react-native";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { Ionicons } from "@expo/vector-icons";
+import SelectCliente from "../components/SelectCliente"; // ajuste se seu caminho for diferente
+import {CLIENTES } from "../data/clients";
+/************
+ * CONFIG
+ ************/
+const APPSCRIPT_URL = "https://script.google.com/macros/s/AKfycbxNG2qw7WJ5UxtLfA681FfAy4zk6mg4zrZOMWx15qUPQRvjHG1haZW2KyWCI756iyn-/exec"; // coloque sua URL /exec aqui
 
-/** Ajuste se usar Apps Script */
-const APPSCRIPT_URL = "https://script.google.com/macros/s/AKfycbxNG2qw7WJ5UxtLfA681FfAy4zk6mg4zrZOMWx15qUPQRvjHG1haZW2KyWCI756iyn-/exec";
-const STORAGE_KEY = "";
+/************
+ * UTILS
+ ************/
+const currency = (n: number) =>
+  (isFinite(n) ? n : 0).toLocaleString("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  });
 
-/** Lista fixa de clientes (fiado/recebimento) */
-const CLIENTES = [
-  "Mamão","Galante","Colaço","Eugênio","Lô","José XCAP","Irineu","Adilson","Antônio Ribeiro","Josué",
-  "Paulo Borges","Jacqueline","Pai","Lucas","Adriana","Shirley","Jair","Sonia P","Paião","Cardoso",
-  "Volante","Machado","Henrique","Giva","Polato","Peletiero","Minha Grife","Instaladora Andrade",
-];
+const toNumber = (v: any): number => {
+  if (v === undefined || v === null) return 0;
+  const s = String(v).replace(",", ".").replace(/[^\d\.\-]/g, "");
+  const n = parseFloat(s);
+  return isNaN(n) ? 0 : n;
+};
 
-const C = { bg: "#ffdbd7", accent: "#dd9abaff", textDark: "#832d69ff", white: "#ffffff", border: "#dd9abaff" };
+const hojeKey = () => {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
 
-/** helpers */
-const toNumber = (v: any) =>
-  typeof v === "number" ? v : parseFloat(String(v ?? "").replace(",", ".").replace(/[^\d.-]/g, "")) || 0;
-const currency = (n: number) => (n || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+const STORAGE_KEY = `fechamento:${hojeKey()}`;
 
-/** Sanitiza texto para numérico (mantém vazio) — com suporte opcional a negativo */
-function sanitizeNumText(t: string, allowNegative = false) {
-  if (t.trim() === "") return "";
-  let s = t.replace(",", ".").replace(/[^\d\.\-]/g, ""); // mantém dígitos, ponto e hífen
+// Fixos
+const ENTRADA_FIXOS_BASE = ["Moeda", "Tarifa", "Bolão", "Mkt", "Telesena"] as const;
+// “Em caixa” entra por último (pedido)
+const SAIDA_FIXOS = ["Moeda", "Bolão", "Mkt", "Troca"] as const;
 
-  // mantém no máximo um ponto decimal
-  const parts = s.split(".");
-  if (parts.length > 2) s = parts[0] + "." + parts.slice(1).join("");
-
-  if (allowNegative) {
-    // permite '-' apenas no início
-    const startsWithMinus = s.startsWith("-");
-    s = (startsWithMinus ? "-" : "") + s.replace(/-/g, "");
-  } else {
-    s = s.replace(/-/g, "");
-  }
-
-  // permite o usuário deixar apenas '-' temporariamente enquanto digita
-  if (allowNegative && s === "-") return "-";
-
-  return s;
-}
-
-/** Estilos */
-const S = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: C.bg },
-  container: { padding: 16 },
-
-  titulo: { fontSize: 22, fontWeight: "900", color: C.accent, marginBottom: 8 },
-
-  greetRow: { flexDirection: "row", alignItems: "center", marginBottom: 10 },
-  greetText: { fontStyle: "italic", color: C.textDark, fontWeight: "600", marginRight: 6 },
-
-  tabsRow: { flexDirection: "row", marginBottom: 12 },
-  tabBtn: {
-    flex: 1,
-    alignItems: "center",
-    paddingVertical: 10,
-    marginHorizontal: 5,
-    borderWidth: 2,
-    borderColor: C.border,
-    borderRadius: 10,
-    backgroundColor: C.white, // fundo branco mesmo inativa
-    ...(Platform.OS === "web" ? { boxShadow: "0 3px 8px rgba(0,0,0,0.06)" as any } : { elevation: 2 }),
-  },
-  tabBtnActive: { backgroundColor: C.accent },
-  tabText: { color: C.accent, fontWeight: "900" },
-  tabTextActive: { color: "#fff", fontWeight: "900" },
-
-  label: { fontWeight: "800", color: C.accent, marginBottom: 6 },
-
-  input: {
-    flex: 1,
-    alignSelf: "stretch",
-    backgroundColor: C.white,
-    borderRadius: 10,
-    borderWidth: 2,
-    borderColor: C.border,
-    paddingHorizontal: 12,
-    paddingVertical: Platform.OS === "web" ? 8 : 10,
-    marginBottom: 12,
-    color: C.textDark,
-    fontWeight: "700" as TextStyle["fontWeight"],
-  },
-  inputCompact: {
-    paddingHorizontal: 8,
-    paddingVertical: Platform.OS === "web" ? 6 : 8,
-    marginBottom: 6,
-  },
-
-  // Cards (formulário e resumo)
-  card: {
-    backgroundColor: C.white,
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 12,
-    ...(Platform.OS === "web"
-      ? { boxShadow: "0 4px 10px rgba(0,0,0,0.08)" as any }
-      : { elevation: 3 }),
-  },
-  cardSmall: {
-    backgroundColor: C.white,
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 16,
-    ...(Platform.OS === "web"
-      ? { boxShadow: "0 4px 10px rgba(0,0,0,0.10)" as any }
-      : { elevation: 2 }),
-  },
-
-  sectionHeader: {
-    color: C.accent,
-    fontWeight: "900",
-    fontSize: 18,
-    marginBottom: 8,
-  },
-
-  groupCard: { backgroundColor: "transparent", borderWidth: 0, borderRadius: 0, marginBottom: 10, padding: 0 },
-  groupHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 6 },
-  groupTitle: { color: C.accent, fontWeight: "900", fontSize: 16 },
-  groupBtns: { flexDirection: "row" },
-
-  smallBtn: {
-    width: 30, height: 30, borderWidth: 0, borderColor: "transparent", borderRadius: 15,
-    backgroundColor: "transparent", alignItems: "center", justifyContent: "center", marginHorizontal: 6,
-  },
-
-  row2: { flexDirection: "row" },
-  col: { flex: 1, marginRight: 10 },
-  colLast: { flex: 1 },
-
-  actionButtonsRow: { flexDirection: "row", justifyContent: "space-around", marginTop: 16, marginBottom: 28 },
-  actionButton: {
-    flex: 1,
-    paddingVertical: 12,
-    marginHorizontal: 6,
-    borderWidth: 2,
-    borderColor: C.border,
-    borderRadius: 10,
-    backgroundColor: C.white, // fundo branco
-    alignItems: "center",
-    justifyContent: "center",
-    flexDirection: "row",
-    ...(Platform.OS === "web"
-      ? { boxShadow: "0 4px 10px rgba(0,0,0,0.12)" as any }
-      : { elevation: 4 }),
-  },
-  actionButtonText: { color: C.accent, fontWeight: "800", fontSize: 16 },
-
-  resumoRow: { flexDirection: "row", justifyContent: "space-between", marginVertical: 4 },
-  resumoLabel: { color: C.textDark, fontWeight: "800" },
-  resumoValor: { color: C.textDark, fontWeight: "900" },
-
-  modalBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.35)", justifyContent: "center", padding: 16 },
-  modalCard: { backgroundColor: C.white, borderRadius: 10, padding: 12, maxHeight: "70%" },
-  searchInput: {
-    alignSelf: "stretch", backgroundColor: "#fff", borderRadius: 10, borderWidth: 2, borderColor: C.border,
-    paddingHorizontal: 12, paddingVertical: 8, marginBottom: 10, color: C.textDark, fontWeight: "700" as TextStyle["fontWeight"],
-  },
-  chip: { paddingVertical: 10, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: "#eee" },
-  chipText: { color: C.textDark, fontWeight: "800" as TextStyle["fontWeight"] },
-
-  nameBox: {
-    flex: 1, borderWidth: 2, borderColor: C.border, borderRadius: 10, backgroundColor: C.white,
-    paddingHorizontal: 12, paddingVertical: 10, marginBottom: 12, justifyContent: "center",
-  },
-  nameBoxText: { color: C.textDark, fontWeight: "800" as TextStyle["fontWeight"] },
-  nameBoxPlaceholder: { color: "#9c6e82", fontWeight: "700" as TextStyle["fontWeight"] },
-});
-
-type NameValue = { nome?: string; valor?: string };
-
-export default function FechamentoScreen() {
-  const [sec, setSec] = useState<"entrada" | "saida">("entrada");
-  const [userInfo, setUserInfo] = useState<{ nome?: string } | null>(null);
+type NameVal = { nome: string; valor: string };
+type StateShape = {
+  // IDENTIDADE
+  auth?: { user: string; nome: string } | null;
 
   // ENTRADA
-  const [dinheiro, setDinheiro] = useState<string[]>([""]);
-  const [moedaEntrada, setMoedaEntrada] = useState("");
-  const [tarifa, setTarifa] = useState("");
-  const [bolaoEntrada, setBolaoEntrada] = useState("");
-  const [mktEntrada, setMktEntrada] = useState<string[]>([""]);
-  const [recebimentos, setRecebimentos] = useState<NameValue[]>([{ nome: "", valor: "" }]);
-  const [telesena, setTelesena] = useState("");
-  const [raspQtd, setRaspQtd] = useState({ "2.50": "0", "5.00": "0", "10.00": "0", "20.00": "0" });
-  const [emCaixa, setEmCaixa] = useState("");
+  entradaDinheiro: string[]; // dinâmico
+  entradaFixos: Record<string, string>; // inclui os base e “Em caixa” (no fim)
+  entradaRecebimentos: NameVal[]; // dinâmico (SelectCliente + valor)
+  entradaMkt: string[]; // dinâmico
+  entradaDenomQtds: { ["2.50"]?: string; ["5.00"]?: string; ["10.00"]?: string; ["20.00"]?: string };
 
   // SAÍDA
-  const [retiradas, setRetiradas] = useState<string[]>([""]);
-  const [moedaSaida, setMoedaSaida] = useState("");
-  const [bolaoSaida, setBolaoSaida] = useState("");
-  const [mktSaida, setMktSaida] = useState<string[]>([""]);
-  const [pix, setPix] = useState<NameValue[]>([{ nome: "", valor: "" }]);     // livre nome + valor
-  const [fiado, setFiado] = useState<NameValue[]>([{ nome: "", valor: "" }]); // seletor + valor numérico
-  const [troca, setTroca] = useState("");
-  const [raspSaida, setRaspSaida] = useState<string[]>([""]);                 // apenas valor
-  const [outros, setOutros] = useState<NameValue[]>([{ nome: "", valor: "" }]);
+  saidaRetiradas: string[]; // dinâmico
+  saidaFixos: Record<(typeof SAIDA_FIXOS)[number], string>;
+  saidaPix: NameVal[]; // dinâmico (NOME LIVRE + valor)
+  saidaFiados: NameVal[]; // dinâmico (SelectCliente + valor)
+  saidaOutros: NameVal[]; // dinâmico (NOME LIVRE + valor)
+  saidaRaspinhaValores: string[]; // raspinha na saída (apenas valores)
+  saidaMkt: string[]; // dinâmico
+};
 
-  // Modal seletor de clientes (para Recebimento e Fiado — Pix não usa)
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [pickerSearch, setPickerSearch] = useState("");
-  const [pickerTarget, setPickerTarget] = useState<{ kind: "receb" | "fiado"; index: number } | null>(null);
+const blankState = (): StateShape => ({
+  auth: null,
+  entradaDinheiro: [""],
+  entradaFixos: {
+    "Moeda": "",
+    "Tarifa": "",
+    "Bolão": "",
+    "Mkt": "",
+    "Telesena": "",
+    "Em caixa": "", // aceita negativo, mas sem texto no label
+  },
+  entradaRecebimentos: [{ nome: "", valor: "" }],
+  entradaMkt: [""],
+  entradaDenomQtds: { "2.50": "0", "5.00": "0", "10.00": "0", "20.00": "0" },
 
-  const filteredClientes = CLIENTES.filter((n) =>
-    n.toLowerCase().includes(pickerSearch.trim().toLowerCase())
-  );
-  const openPicker = (kind: "receb" | "fiado", index: number) => {
-    setPickerTarget({ kind, index }); setPickerSearch(""); setPickerOpen(true);
-  };
-  const chooseClient = (nome: string) => {
-    if (!pickerTarget) return;
-    if (pickerTarget.kind === "receb") {
-      setRecebimentos((p) => p.map((x, i) => (i === pickerTarget.index ? { ...x, nome } : x)));
-    } else {
-      setFiado((p) => p.map((x, i) => (i === pickerTarget.index ? { ...x, nome } : x)));
+  saidaRetiradas: [""],
+  saidaFixos: {
+    "Moeda": "",
+    "Bolão": "",
+    "Mkt": "",
+    "Troca": "",
+  },
+  saidaPix: [{ nome: "", valor: "" }], // pix: nome livre + valor
+  saidaFiados: [{ nome: "", valor: "" }], // fiado: SelectCliente + valor
+  saidaOutros: [{ nome: "", valor: "" }], // outros: nome livre + valor
+  saidaRaspinhaValores: [""],
+  saidaMkt: [""],
+});
+
+/************
+ * COMPONENTE
+ ************/
+export default function FechamentoScreen() {
+  const [tab, setTab] = useState<"entrada" | "saida">("entrada");
+  const [state, setState] = useState<StateShape>(blankState());
+  const [loading, setLoading] = useState(true);
+
+  // carrega auth e dados salvos do dia
+  useEffect(() => {
+    (async () => {
+      try {
+        const saved = await AsyncStorage.getItem(STORAGE_KEY);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          setState((p) => ({ ...p, ...parsed }));
+        }
+        const authStr = await AsyncStorage.getItem("auth:user");
+        if (authStr) {
+          try {
+            const a = JSON.parse(authStr);
+            if (a?.nome || a?.user) {
+              setState((p) => ({ ...p, auth: { nome: a?.nome ?? "", user: a?.user ?? "" } }));
+            }
+          } catch {}
+        }
+      } catch (e) {
+        console.warn("Erro lendo storage", e);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  // soma de raspinhas (entrada) por denom
+  const raspEntradaTotal = useMemo(() => {
+    const d = state.entradaDenomQtds || {};
+    return (
+      toNumber(d["2.50"]) * 2.5 +
+      toNumber(d["5.00"]) * 5 +
+      toNumber(d["10.00"]) * 10 +
+      toNumber(d["20.00"]) * 20
+    );
+  }, [state.entradaDenomQtds]);
+
+  // totais
+const totals = useMemo(() => {
+  const sumArr = (arr?: string[]) => (Array.isArray(arr) ? arr.reduce((a, v) => a + toNumber(v), 0) : 0);
+  const sumObj = (obj?: Record<string, string>) =>
+    obj ? Object.values(obj).reduce((a, v) => a + toNumber(v), 0) : 0;
+  const sumNameVal = (arr?: NameVal[]) =>
+    Array.isArray(arr) ? arr.reduce((a, it) => a + toNumber(it?.valor), 0) : 0;
+
+  // entradas negativas
+  const entrada =
+    -(sumArr(state.entradaDinheiro) +
+      sumObj(state.entradaFixos) +
+      sumArr(state.entradaMkt) +
+      sumNameVal(state.entradaRecebimentos) +
+      raspEntradaTotal);
+
+  // saídas positivas
+  const saida =
+    sumArr(state.saidaRetiradas) +
+    sumObj(state.saidaFixos) +
+    sumArr(state.saidaMkt) +
+    sumNameVal(state.saidaPix) +
+    sumNameVal(state.saidaFiados) +
+    sumNameVal(state.saidaOutros) +
+    sumArr(state.saidaRaspinhaValores);
+
+  // resultado = soma direta
+  return { entrada, saida, resultado: entrada + saida };
+}, [state, raspEntradaTotal]);
+
+
+  /************
+   * AÇÕES
+   ************/
+  async function salvarLocal() {
+    try {
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      Alert.alert("Salvo!", "Dados salvos no dispositivo com sucesso.");
+    } catch (e) {
+      Alert.alert("Erro", "Não foi possível salvar no dispositivo.");
     }
-    setPickerOpen(false);
-  };
+  }
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const auth = await AsyncStorage.getItem("auth:user");
-        if (auth) setUserInfo(JSON.parse(auth));
-      } catch {}
-    })();
-  }, []);
-
-  const totais = useMemo(() => {
-    const somaArr = (arr: string[]) => arr.reduce((a, v) => a + toNumber(v), 0);
-    const somaNV = (arr: NameValue[]) => arr.reduce((a, it) => a + toNumber(it.valor), 0);
-
-    const raspEntradaTotal =
-      toNumber(raspQtd["2.50"]) * 2.5 +
-      toNumber(raspQtd["5.00"]) * 5 +
-      toNumber(raspQtd["10.00"]) * 10 +
-      toNumber(raspQtd["20.00"]) * 20;
-
-    const entrada =
-      somaArr(dinheiro) +
-      toNumber(moedaEntrada) +
-      toNumber(tarifa) +
-      toNumber(bolaoEntrada) +
-      somaArr(mktEntrada) +
-      toNumber(telesena) +
-      raspEntradaTotal +
-      toNumber(emCaixa); // pode ser negativo
-
-    const saida =
-      somaArr(retiradas) +
-      toNumber(moedaSaida) +
-      toNumber(bolaoSaida) +
-      somaArr(mktSaida) +
-      somaNV(pix) +
-      somaNV(fiado) +
-      toNumber(troca) +
-      somaArr(raspSaida) +
-      somaNV(outros);
-
-    return {
-      entrada,
-      saida,
-      resultado: entrada - saida,
-      raspEntradaTotal,
-      subtotalEntrada: entrada,
-      subtotalSaida: saida,
-    };
-  }, [
-    dinheiro, moedaEntrada, tarifa, bolaoEntrada, mktEntrada, telesena, raspQtd, emCaixa,
-    retiradas, moedaSaida, bolaoSaida, mktSaida, pix, fiado, troca, raspSaida, outros,
-  ]);
-
-  useEffect(() => {
-    (async () => {
-      const saved = await AsyncStorage.getItem(STORAGE_KEY);
-      if (!saved) return;
-      try {
-        const st = JSON.parse(saved);
-        setDinheiro(st.dinheiro ?? [""]);
-        setMoedaEntrada(st.moedaEntrada ?? "");
-        setTarifa(st.tarifa ?? "");
-        setBolaoEntrada(st.bolaoEntrada ?? "");
-        setMktEntrada(st.mktEntrada ?? [""]);
-        setRecebimentos(st.recebimentos ?? [{ nome: "", valor: "" }]);
-        setTelesena(st.telesena ?? "");
-        setRaspQtd(st.raspQtd ?? { "2.50": "0", "5.00": "0", "10.00": "0", "20.00": "0" });
-        setEmCaixa(st.emCaixa ?? "");
-
-        setRetiradas(st.retiradas ?? [""]);
-        setMoedaSaida(st.moedaSaida ?? "");
-        setBolaoSaida(st.bolaoSaida ?? "");
-        setMktSaida(st.mktSaida ?? [""]);
-        setPix(st.pix ?? [{ nome: "", valor: "" }]);
-        setFiado(st.fiado ?? [{ nome: "", valor: "" }]);
-        setTroca(st.troca ?? "");
-        setRaspSaida(st.raspSaida ?? [""]);
-        setOutros(st.outros ?? [{ nome: "", valor: "" }]);
-      } catch {}
-    })();
-  }, []);
-
-  const salvar = async () => {
-    const state = {
-      dinheiro, moedaEntrada, tarifa, bolaoEntrada, mktEntrada, recebimentos, telesena, raspQtd, emCaixa,
-      retiradas, moedaSaida, bolaoSaida, mktSaida, pix, fiado, troca, raspSaida, outros,
-    };
-    await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    Alert.alert("Salvo", "Fechamento salvo no dispositivo!");
-  };
-
-  const limpar = () => {
-    setDinheiro([""]); setMoedaEntrada(""); setTarifa(""); setBolaoEntrada("");
-    setMktEntrada([""]); setRecebimentos([{ nome: "", valor: "" }]); setTelesena("");
-    setRaspQtd({ "2.50": "0", "5.00": "0", "10.00": "0", "20.00": "0" }); setEmCaixa("");
-
-    setRetiradas([""]); setMoedaSaida(""); setBolaoSaida(""); setMktSaida([""]);
-    setPix([{ nome: "", valor: "" }]); setFiado([{ nome: "", valor: "" }]); setTroca("");
-    setRaspSaida([""]); setOutros([{ nome: "", valor: "" }]);
-
-    Alert.alert("Limpo", "Todos os campos foram limpos.");
-  };
-
-  const enviar = () => {
-    Alert.alert("Enviar", "Confirma enviar para a planilha?", [
+  function limparTudo() {
+    Alert.alert("Limpar", "Deseja limpar todos os dados do dia?", [
       { text: "Cancelar", style: "cancel" },
       {
-        text: "OK",
+        text: "Limpar",
+        style: "destructive",
         onPress: async () => {
-          const authStr = await
-AsyncStorage.getItem("auth:user")
-let nome ="Caixa";
-if(authStr) { try{  const a = JSON.parse(authStr)
-  if (a?.nome) nome = a.nome;
-} catch {}
-}          try {
-            const body = {
-              nome,
-              entradaDinheiro: dinheiro,
-              entradaFixos: { Moeda: moedaEntrada, Tarifa: tarifa, "Bolão": bolaoEntrada, Mkt: "", Telesena: telesena },
-              entradaMkt: mktEntrada,
-              entradaRecebimentos: recebimentos,
-              entradaDenomQtds: raspQtd,
-              emCaixa,
-              saidaRetiradas: retiradas,
-              saidaFixos: { Moeda: moedaSaida, "Bolão": bolaoSaida, Mkt: "", Troca: troca },
-              saidaPix: pix,
-              saidaFiados: fiado,
-              saidaOutros: outros,
-              saidaRaspinhaValores: raspSaida, // raspinha saída = só valores
-              saidaMkt: mktSaida,
-            };
-            const res = await fetch(APPSCRIPT_URL, {
-              method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(body),
-            });
-            const text = await res.text();
-            let json: any = {};
-            try { json = JSON.parse(text); } catch {}
-            if (!res.ok) {
-              Alert.alert("HTTP erro", `Status: ${res.status}\n${text}`);
-              return;
-            }
-            if (!json.ok) {
-              Alert.alert("Servidor disse NÃO", String(json.error || text));
-              return;
-            }
-            Alert.alert("Sucesso", "Fechamento enviado para a planilha!");
-          } catch (e: any) {
-            Alert.alert("Erro", String(e?.message || e));
-          }
+          const fresh = blankState();
+          fresh.auth = state.auth ?? null;
+          setState(fresh);
+          await AsyncStorage.removeItem(STORAGE_KEY);
         },
       },
     ]);
-  };
+  }
+
+  async function enviarParaPlanilha() {
+    Alert.alert(
+      "Enviar para planilha",
+      "Deseja enviar os dados do fechamento para a planilha?",
+      [
+        { text: "Cancelar", style: "cancel" },
+        {
+          text: "Enviar",
+          style: "default",
+          onPress: async () => {
+            try {
+              let nome = state?.auth?.nome || "Caixa";
+              let user = state?.auth?.user || "";
+
+              const body = {
+                nome,
+                user,
+
+                // entrada
+                entradaDinheiro: state.entradaDinheiro,
+                entradaFixos: state.entradaFixos,
+                entradaMkt: state.entradaMkt,
+                entradaRecebimentos: state.entradaRecebimentos,
+                entradaDenomQtds: state.entradaDenomQtds,
+
+                // saída
+                saidaRetiradas: state.saidaRetiradas,
+                saidaFixos: state.saidaFixos,
+                saidaPix: state.saidaPix,
+                saidaFiados: state.saidaFiados,
+                saidaOutros: state.saidaOutros,
+                saidaRaspinhaValores: state.saidaRaspinhaValores,
+                saidaMkt: state.saidaMkt,
+              };
+
+              const res = await fetch(APPSCRIPT_URL, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body),
+              });
+
+              const json = await res.json().catch(() => ({} as any));
+              if (!res.ok || !json?.ok) {
+                throw new Error(json?.error || `HTTP ${res.status}`);
+              }
+              Alert.alert("Enviado!", "Dados enviados para a planilha com sucesso.");
+            } catch (err: any) {
+              console.error(err);
+              Alert.alert("Erro", String(err?.message || err));
+            }
+          },
+        },
+      ]
+    );
+  }
+
+  /************
+   * RENDER
+   ************/
+  if (loading) return null;
 
   return (
     <SafeAreaView style={S.safe}>
       <ScrollView contentContainerStyle={S.container}>
-        <Text style={S.titulo}>Fechamento</Text>
-
-        {/* Mensagem de boas-vindas */}
-        <View style={S.greetRow}>
-          <Text style={S.greetText}>
-            Olá, {userInfo?.nome || "Caixa"}, espero que você tenha um dia maravilhoso.
+        {/* Cabeçalho + Saudação */}
+        <Text style={S.titulo}>Fechamento de Caixa • {hojeKey()}</Text>
+        {state.auth?.nome ? (
+          <Text style={S.greeting}>
+            <Text style={{ fontStyle: "italic" }}>
+              Olá, {state.auth.nome}, espero que você tenha um dia maravilhoso.
+            </Text>{" "}
+            <Text>❤️</Text>
           </Text>
-          <Ionicons name="heart" size={16} color={C.accent} />
-        </View>
+        ) : null}
 
-        {/* Abas internas */}
-        <View style={S.tabsRow}>
-          <Pressable style={[S.tabBtn, sec === "entrada" && S.tabBtnActive]} onPress={() => setSec("entrada")}>
-            <Text style={[S.tabText, sec === "entrada" && S.tabTextActive]}>Entrada</Text>
+        {/* Abinhas de navegação (Entrada / Saída) */}
+        <View style={S.tabs}>
+          <Pressable
+            onPress={() => setTab("entrada")}
+            style={[S.tabBtn, tab === "entrada" ? S.tabBtnActive : null]}
+          >
+            <Text style={[S.tabTxt, tab === "entrada" ? S.tabTxtActive : null]}>Entrada</Text>
           </Pressable>
-          <Pressable style={[S.tabBtn, sec === "saida" && S.tabBtnActive]} onPress={() => setSec("saida")}>
-            <Text style={[S.tabText, sec === "saida" && S.tabTextActive]}>Saída</Text>
-          </Pressable>
-        </View>
-
-        {/* ===== ENTRADA ===== */}
-        {sec === "entrada" && (
-          <>
-            {/* CARD GRANDE - formulário */}
-            <View style={S.card}>
-              <Text style={S.sectionHeader}>Lançamentos de Entrada</Text>
-
-              <Group
-                title="Dinheiro"
-                items={dinheiro.map((v) => ({ valor: v }))}
-                onAdd={() => setDinheiro((p) => [...p, ""])}
-                onRemove={() => setDinheiro((p) => (p.length > 1 ? p.slice(0, -1) : p))}
-                renderItem={(item, i) => (
-                  <NumericInput
-                    key={i}
-                    placeholder={`Dinheiro ${i + 1}`}
-                    value={item.valor}
-                    onChangeText={(t) => setDinheiro((p) => p.map((x, idx) => (idx === i ? t : x)))}
-                  />
-                )}
-              />
-
-              <Text style={S.label}>Moeda</Text>
-              <NumericInput value={moedaEntrada} onChangeText={setMoedaEntrada} />
-
-              <Text style={S.label}>Tarifa</Text>
-              <NumericInput value={tarifa} onChangeText={setTarifa} />
-
-              <Text style={S.label}>Bolão</Text>
-              <NumericInput value={bolaoEntrada} onChangeText={setBolaoEntrada} />
-
-              <Group
-                title="Mkt"
-                items={mktEntrada.map((v) => ({ valor: v }))}
-                onAdd={() => setMktEntrada((p) => [...p, ""])}
-                onRemove={() => setMktEntrada((p) => (p.length > 1 ? p.slice(0, -1) : p))}
-                renderItem={(item, i) => (
-                  <NumericInput
-                    key={i}
-                    placeholder={`Mkt ${i + 1}`}
-                    value={item.valor}
-                    onChangeText={(t) => setMktEntrada((p) => p.map((x, idx) => (idx === i ? t : x)))}
-                  />
-                )}
-              />
-
-              {/* Recebimento com seletor de cliente (nome não digitável) + valor numérico */}
-              <ClientValueGroup
-                title="Recebimento"
-                items={recebimentos}
-                setItems={setRecebimentos}
-                onPick={openPicker}
-                kind="receb"
-              />
-
-              <Text style={S.label}>Telesena</Text>
-              <NumericInput value={telesena} onChangeText={setTelesena} />
-
-              {/* Raspinha ENTRADA — compacto e sem quebra */}
-              <View style={{ marginBottom: 8 }}>
-                <View style={S.groupHeader}><Text style={S.groupTitle}>Raspinha (quantidades)</Text><View /></View>
-
-                {([
-                  { key: "2.50", label: "2,50", mult: 2.5 },
-                  { key: "5.00", label: "5,00", mult: 5 },
-                  { key: "10.00", label: "10,00", mult: 10 },
-                  { key: "20.00", label: "20,00", mult: 20 },
-                ] as const).map(({ key, label, mult }) => {
-                  const q = Number(raspQtd[key] || 0);
-                  return (
-                    <View key={key} style={{ marginBottom: 4 }}>
-                      <View
-                        style={{
-                          flexDirection: "row",
-                          alignItems: "center",
-                          justifyContent: "space-between",
-                          flexWrap: "nowrap" as any,
-                        }}
-                      >
-                        <Text numberOfLines={1} style={[S.groupTitle, { width: 72 }]}>R$ {label}</Text>
-
-                        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
-                          <Pressable
-                            style={S.smallBtn}
-                            onPress={() => setRaspQtd((p) => ({ ...p, [key]: String(Math.max(0, (Number(p[key] || 0) - 1) | 0)) }))}
-                          >
-                            <Ionicons name="remove-circle" size={20} color={C.accent} />
-                          </Pressable>
-
-                          <View style={{ width: 80, marginHorizontal: 4 }}>
-                            <TextInput
-                              style={[S.input, S.inputCompact]}
-                              keyboardType="numeric"
-                              inputMode="numeric"
-                              placeholder="Qtd"
-                              value={String(raspQtd[key] || "")}
-                              onChangeText={(t) => {
-                                if (t === "") return setRaspQtd((p) => ({ ...p, [key]: "" }));
-                                const n = Math.max(0, parseInt(t.replace(/\D+/g, "") || "0", 10));
-                                setRaspQtd((p) => ({ ...p, [key]: String(n) }));
-                              }}
-                            />
-                          </View>
-
-                          <Pressable
-                            style={S.smallBtn}
-                            onPress={() => setRaspQtd((p) => ({ ...p, [key]: String(((Number(p[key] || 0) + 1) | 0)) }))}
-                          >
-                            <Ionicons name="add-circle" size={20} color={C.accent} />
-                          </Pressable>
-                        </View>
-
-                        <View style={{ width: 110, marginLeft: 8 }}>
-                          <TextInput
-                            style={[S.input, S.inputCompact, { opacity: 0.6 }]}
-                            editable={false}
-                            value={currency(q * mult)}
-                          />
-                        </View>
-                      </View>
-                    </View>
-                  );
-                })}
-
-                <Text style={[S.label, { marginTop: 2 }]}>
-                  Total Raspinha: {currency(
-                    (Number(raspQtd["2.50"] || 0) * 2.5) +
-                    (Number(raspQtd["5.00"]  || 0) * 5) +
-                    (Number(raspQtd["10.00"] || 0) * 10) +
-                    (Number(raspQtd["20.00"] || 0) * 20)
-                  )}
-                </Text>
-              </View>
-
-              <Text style={S.label}>Em Caixa</Text>
-              <NumericInput value={emCaixa} onChangeText={setEmCaixa} allowNegative />
-            </View>
-
-            {/* CARD PEQUENO - resumo desta aba + totais gerais */}
-            <View style={S.cardSmall}>
-              <Text style={S.sectionHeader}>Resumo — Entrada</Text>
-              <View style={S.resumoRow}><Text style={S.resumoLabel}>Subtotal Entrada</Text><Text style={S.resumoValor}>{currency(totais.subtotalEntrada)}</Text></View>
-              <View style={S.resumoRow}><Text style={S.resumoLabel}>Total Saída</Text><Text style={S.resumoValor}>{currency(totais.saida)}</Text></View>
-              <View style={S.resumoRow}><Text style={S.resumoLabel}>Resultado</Text><Text style={S.resumoValor}>{currency(totais.resultado)}</Text></View>
-            </View>
-          </>
-        )}
-
-        {/* ===== SAÍDA ===== */}
-        {sec === "saida" && (
-          <>
-            {/* CARD GRANDE - formulário */}
-            <View style={S.card}>
-              <Text style={S.sectionHeader}>Lançamentos de Saída</Text>
-
-              <Group
-                title="Retirada"
-                items={retiradas.map((v) => ({ valor: v }))}
-                onAdd={() => setRetiradas((p) => [...p, ""])}
-                onRemove={() => setRetiradas((p) => (p.length > 1 ? p.slice(0, -1) : p))}
-                renderItem={(item, i) => (
-                  <NumericInput
-                    key={i}
-                    placeholder={`Retirada ${i + 1}`}
-                    value={item.valor}
-                    onChangeText={(t) => setRetiradas((p) => p.map((x, idx) => (idx === i ? t : x)))}
-                  />
-                )}
-              />
-
-              <Text style={S.label}>Moeda</Text>
-              <NumericInput value={moedaSaida} onChangeText={setMoedaSaida} />
-
-              <Text style={S.label}>Bolão</Text>
-              <NumericInput value={bolaoSaida} onChangeText={setBolaoSaida} />
-
-              <Group
-                title="Mkt"
-                items={mktSaida.map((v) => ({ valor: v }))}
-                onAdd={() => setMktSaida((p) => [...p, ""])}
-                onRemove={() => setMktSaida((p) => (p.length > 1 ? p.slice(0, -1) : p))}
-                renderItem={(item, i) => (
-                  <NumericInput
-                    key={i}
-                    placeholder={`Mkt ${i + 1}`}
-                    value={item.valor}
-                    onChangeText={(t) => setMktSaida((p) => p.map((x, idx) => (idx === i ? t : x)))}
-                  />
-                )}
-              />
-
-              <Text style={S.label}>Troca</Text>
-              <NumericInput value={troca} onChangeText={setTroca} />
-
-              {/* Pix (nome texto + valor numérico) */}
-              <NameValueGroup title="Pix" items={pix} setItems={setPix} forceNumericValue />
-
-              {/* Fiado (seletor de clientes + valor numérico) */}
-              <ClientValueGroup title="Fiado" items={fiado} setItems={setFiado} onPick={openPicker} kind="fiado" />
-
-              {/* Raspinha (Saída) — apenas valor, dinâmico */}
-              <Group
-                title="Raspinha"
-                items={raspSaida.map((v) => ({ valor: v }))} // mapeia string -> { valor }
-                onAdd={() => setRaspSaida((p) => [...p, ""])}
-                onRemove={() => setRaspSaida((p) => (p.length > 1 ? p.slice(0, -1) : p))}
-                renderItem={(item, i) => (
-                  <NumericInput
-                    key={i}
-                    placeholder={`Raspinha ${i + 1}`}
-                    value={item.valor}
-                    onChangeText={(t) => setRaspSaida((p) => p.map((x, idx) => (idx === i ? t : x)))}
-                  />
-                )}
-              />
-
-              {/* Outros (nome texto + valor numérico) */}
-              <NameValueGroup title="Outros" items={outros} setItems={setOutros} forceNumericValue />
-            </View>
-
-            {/* CARD PEQUENO - resumo desta aba + totais gerais */}
-            <View style={S.cardSmall}>
-              <Text style={S.sectionHeader}>Resumo — Saída</Text>
-              <View style={S.resumoRow}><Text style={S.resumoLabel}>Subtotal Saída</Text><Text style={S.resumoValor}>{currency(totais.subtotalSaida)}</Text></View>
-              <View style={S.resumoRow}><Text style={S.resumoLabel}>Total Entrada</Text><Text style={S.resumoValor}>{currency(totais.entrada)}</Text></View>
-              <View style={S.resumoRow}><Text style={S.resumoLabel}>Resultado</Text><Text style={S.resumoValor}>{currency(totais.resultado)}</Text></View>
-            </View>
-          </>
-        )}
-
-        {/* Botões de ação */}
-        <View style={S.actionButtonsRow}>
-          <Pressable style={S.actionButton} onPress={salvar}>
-            <Ionicons name="save-outline" size={18} color={C.accent} style={{ marginRight: 6 }} />
-            <Text style={S.actionButtonText}>Salvar</Text>
-          </Pressable>
-          <Pressable style={S.actionButton} onPress={limpar}>
-            <Ionicons name="trash-outline" size={18} color={C.accent} style={{ marginRight: 6 }} />
-            <Text style={S.actionButtonText}>Limpar</Text>
-          </Pressable>
-          <Pressable style={S.actionButton} onPress={enviar}>
-            <Ionicons name="send-outline" size={18} color={C.accent} style={{ marginRight: 6 }} />
-            <Text style={S.actionButtonText}>Enviar</Text>
+          <Pressable
+            onPress={() => setTab("saida")}
+            style={[S.tabBtn, tab === "saida" ? S.tabBtnActive : null]}
+          >
+            <Text style={[S.tabTxt, tab === "saida" ? S.tabTxtActive : null]}>Saída</Text>
           </Pressable>
         </View>
+
+        {/* CARD DO FORM */}
+        <View style={S.cardForm}>
+          {tab === "entrada" ? renderEntrada() : renderSaida()}
+        </View>
+
+        {/* CARD DO RESUMO */}
+        <View style={S.cardResumo}>
+          <Text style={S.cardTitle}>Resumo</Text>
+          <Row label="Total de Entrada" value={currency(totals.entrada)} />
+          <Row label="Total de Saída" value={currency(totals.saida)} />
+          <Row label="Resultado" value={currency(totals.resultado)} strong />
+        </View>
+
+        {/* Ações */}
+<View style={S.actions}>
+  <Pressable onPress={salvarLocal} style={[S.actionBtn, S.shadow]}>
+    <MaterialCommunityIcons name="content-save-outline" size={18} color="#dd9aba" />
+    <Text style={S.actionTxt}>Salvar</Text>
+  </Pressable>
+
+  <Pressable onPress={limparTudo} style={[S.actionBtn, S.shadow]}>
+    <MaterialCommunityIcons name="broom" size={18} color="#dd9aba" />
+    <Text style={S.actionTxt}>Limpar</Text>
+  </Pressable>
+
+  <Pressable onPress={enviarParaPlanilha} style={[S.actionBtn, S.shadow]}>
+    <MaterialCommunityIcons name="send-outline" size={18} color="#dd9aba" />
+    <Text style={S.actionTxt}>Enviar</Text>
+  </Pressable>
+</View>
       </ScrollView>
-
-      {/* Modal seletor de clientes (usado por Recebimento e Fiado) */}
-      <Modal visible={pickerOpen} transparent animationType="fade" onRequestClose={() => setPickerOpen(false)}>
-        <View style={S.modalBackdrop}>
-          <View style={S.modalCard}>
-            <Text style={[S.label, { marginTop: 0 }]}>Selecionar cliente</Text>
-            <TextInput
-              style={S.searchInput}
-              placeholder="Buscar nome…"
-              placeholderTextColor="#9c6e82"
-              value={pickerSearch}
-              onChangeText={setPickerSearch}
-            />
-            <ScrollView>
-              {filteredClientes.map((nome) => (
-                <Pressable key={nome} style={S.chip} onPress={() => chooseClient(nome)}>
-                  <Text style={S.chipText}>{nome}</Text>
-                </Pressable>
-              ))}
-              {filteredClientes.length === 0 && (
-                <Text style={{ color: C.textDark, padding: 8 }}>Nenhum cliente encontrado.</Text>
-              )}
-            </ScrollView>
-            <View style={{ flexDirection: "row", justifyContent: "flex-end", marginTop: 8 }}>
-              <Pressable style={S.tabBtn} onPress={() => setPickerOpen(false)}>
-                <Text style={S.tabText}>Fechar</Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
     </SafeAreaView>
   );
+
+  /************
+   * SUB-RENDERS
+   ************/
+  function renderEntrada() {
+    // Ordem: Dinheiro, Moeda, Tarifa, Bolão, Mkt, Recebimento, Telesena, Raspinha, Em caixa (por último)
+    return (
+      <View>
+        {/* Dinheiro (dinâmico) */}
+        <Section
+          title="Dinheiro"
+           onAdd={() => setState(p => ({ ...p, entradaDinheiro: [...p.entradaDinheiro, ""] }))}
+  onRemoveLast={() => setState(p => ({
+    ...p,
+    entradaDinheiro: p.entradaDinheiro.length > 1 ? p.entradaDinheiro.slice(0, -1) : p.entradaDinheiro
+  }))}>
+          <DynamicNumbers
+            items={state.entradaDinheiro}
+            onChange={(items) => setState((p) => ({ ...p, entradaDinheiro: items }))}
+          />
+        </Section>
+
+        {/* Fixos na ordem desejada, exceto Em caixa que ficará por último */}
+        {ENTRADA_FIXOS_BASE.map((k) => (
+          <FixedInput
+            key={k}
+            label={k}
+            value={state.entradaFixos[k] ?? ""}
+            onChange={(v) =>
+              setState((p) => ({ ...p, entradaFixos: { ...p.entradaFixos, [k]: v } }))
+            }
+          />
+        ))}
+
+        {/* Recebimento (dinâmico com SelectCliente) */}
+        <Section
+          title="Recebimento"
+           onAdd={() => setState(p => ({ ...p, entradaRecebimentos: [...p.entradaRecebimentos, { nome: "", valor: "" }] }))}
+  onRemoveLast={() => setState(p => ({
+    ...p,
+    entradaRecebimentos: p.entradaRecebimentos.length > 1 ? p.entradaRecebimentos.slice(0, -1) : p.entradaRecebimentos
+  }))}
+>
+          <DynamicNameValWithPicker
+    items={state.entradaRecebimentos}
+    onChange={(items) => setState(p => ({ ...p, entradaRecebimentos: items }))}
+    placeholderValor="0,00"
+  />
+</Section>
+
+        {/* Telesena já foi mantido acima; agora Raspinha (Entrada) */}
+        <Section title="Raspinha">
+          <RaspinhasEntrada
+            qtds={state.entradaDenomQtds}
+            onChange={(qtds) => setState((p) => ({ ...p, entradaDenomQtds: qtds }))}
+          />
+          <View style={{ marginTop: 8, alignItems: "flex-end" }}>
+            <Text style={{ fontWeight: "800", color: "#333" }}>
+              Total Raspinha: {currency(raspEntradaTotal)}
+            </Text>
+          </View>
+        </Section>
+
+        {/* Em caixa por último */}
+        <FixedInput
+          label="Em caixa"
+          value={state.entradaFixos["Em caixa"] ?? ""}
+          onChange={(v) =>
+            setState((p) => ({ ...p, entradaFixos: { ...p.entradaFixos, ["Em caixa"]: v } }))
+          }
+          allowNegative
+        />
+      </View>
+    );
+  }
+
+  function renderSaida() {
+    // Ordem: Retirada, Moeda, Bolão, Mkt, Pix, Fiado, Troca, Raspinha, Outros
+    return (
+      <View>
+        {/* Retirada (dinâmico) */}
+        <Section
+          title="Retirada"
+            onAdd={() => setState(p => ({ ...p, saidaRetiradas: [...p.saidaRetiradas, ""] }))}
+  onRemoveLast={() => setState(p => ({
+    ...p,
+    saidaRetiradas: p.saidaRetiradas.length > 1 ? p.saidaRetiradas.slice(0, -1) : p.saidaRetiradas
+  }))}
+>
+          <DynamicNumbers
+            items={state.saidaRetiradas}
+            onChange={(items) => setState((p) => ({ ...p, saidaRetiradas: items }))}
+          />
+        </Section>
+
+        {/* Fixos: Moeda, Bolão, Mkt, Troca */}
+        {SAIDA_FIXOS.map((k) => (
+          <FixedInput
+            key={k}
+            label={k}
+            value={state.saidaFixos[k] ?? ""}
+            onChange={(v) =>
+              setState((p) => ({ ...p, saidaFixos: { ...p.saidaFixos, [k]: v } }))
+            }
+          />
+        ))}
+
+        {/* Pix (dinâmico com NOME LIVRE + valor) — sem subtítulo, só placeholders */}
+        <Section
+          title="Pix"
+           onAdd={() => setState(p => ({ ...p, saidaPix: [...p.saidaPix, { nome: "", valor: "" }] }))}
+  onRemoveLast={() => setState(p => ({
+    ...p,
+    saidaPix: p.saidaPix.length > 1 ? p.saidaPix.slice(0, -1) : p.saidaPix
+  }))}
+>
+          <DynamicNameValFree
+            items={state.saidaPix}
+            onChange={(items) => setState((p) => ({ ...p, saidaPix: items }))}
+            placeholderNome="Nome"
+            placeholderValor="0,00"
+          />
+        </Section>
+
+        {/* Fiado (dinâmico com SelectCliente + valor) — sem subtítulo, só placeholders */}
+        <Section
+          title="Fiado"
+           onAdd={() => setState(p => ({ ...p, saidaFiados: [...p.saidaFiados, { nome: "", valor: "" }] }))}
+  onRemoveLast={() => setState(p => ({
+    ...p,
+    saidaFiados: p.saidaFiados.length > 1 ? p.saidaFiados.slice(0, -1) : p.saidaFiados
+  }))}
+>
+          <DynamicNameValWithPicker
+    items={state.saidaFiados}
+    onChange={(items) => setState(p => ({ ...p, saidaFiados: items }))}
+    placeholderValor="0,00"
+  />
+</Section>
+
+        {/* Raspinha (Saída) — apenas valores (dinâmico) */}
+        <Section
+          title="Raspinha"
+           onAdd={() => setState(p => ({ ...p, saidaRaspinhaValores: [...p.saidaRaspinhaValores, ""] }))}
+  onRemoveLast={() => setState(p => ({
+    ...p,
+    saidaRaspinhaValores: p.saidaRaspinhaValores.length > 1 ? p.saidaRaspinhaValores.slice(0, -1) : p.saidaRaspinhaValores
+  }))}
+>
+          <DynamicNumbers
+            items={state.saidaRaspinhaValores}
+            onChange={(items) => setState((p) => ({ ...p, saidaRaspinhaValores: items }))}
+          />
+        </Section>
+
+        {/* Outros (dinâmico com NOME LIVRE + valor) — sem subtítulo, só placeholders */}
+        <Section
+          title="Outros"
+           onAdd={() => setState(p => ({ ...p, saidaOutros: [...p.saidaOutros, { nome: "", valor: "" }] }))}
+  onRemoveLast={() => setState(p => ({
+    ...p,
+    saidaOutros: p.saidaOutros.length > 1 ? p.saidaOutros.slice(0, -1) : p.saidaOutros
+  }))}
+>
+          <DynamicNameValFree
+            items={state.saidaOutros}
+            onChange={(items) => setState((p) => ({ ...p, saidaOutros: items }))}
+            placeholderNome="Nome"
+            placeholderValor="0,00"
+          />
+        </Section>
+      </View>
+    );
+  }
 }
 
-/** ===== Componentes auxiliares ===== */
-
-function Group({
-  title, items, onAdd, onRemove, renderItem,
-}: { title: string; items: any[]; onAdd: () => void; onRemove: () => void; renderItem: (item: any, i: number) => React.ReactNode; }) {
+/************
+ * SUBCOMPONENTES REUTILIZÁVEIS
+ ************/
+function Section({
+  title,
+  children,
+  onAdd,
+  onRemoveLast,
+}: {
+  title: string;
+  children: React.ReactNode;
+  onAdd?: () => void;
+  onRemoveLast?: () => void;
+}) {
   return (
-    <View style={S.groupCard}>
-      <View style={S.groupHeader}>
-        <Text style={S.groupTitle}>{title}</Text>
-        <View style={S.groupBtns}>
-          <Pressable style={S.smallBtn} onPress={onRemove}>
-            <Ionicons name="remove-circle" size={20} color={C.accent} />
-          </Pressable>
-          <Pressable style={S.smallBtn} onPress={onAdd}>
-            <Ionicons name="add-circle" size={20} color={C.accent} />
-          </Pressable>
+    <View style={{ marginBottom: 18 }}>
+      <View style={S.sectionHeader}>
+        <Text style={S.sectionTitle}>{title}</Text>
+        <View style={{ flexDirection: "row", gap: 8 }}>
+          {onRemoveLast ? (
+            <Pressable onPress={onRemoveLast} style={{padding: 4}} ><MaterialCommunityIcons name="minus-circle-outline" size={22} color="#dd9aba" />
+          
+            </Pressable>
+          ) : null}
+          {onAdd ? (
+            <Pressable onPress={onAdd} style={{padding: 4}}>
+              <MaterialCommunityIcons name="plus-circle-outline" size={22} color="#dd9aba" />
+            </Pressable>
+          ) : null}
         </View>
       </View>
-      {items.map((it, i) => renderItem(it, i))}
+      {children}
+    </View>
+  );
+}
+function Row({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
+  return (
+    <View style={S.row}>
+      <Text style={S.rowLabel}>{label}</Text>
+      <Text style={[S.rowVal, strong ? { fontWeight: "900" } : null]}>{value}</Text>
     </View>
   );
 }
 
-/** Input numérico padrão com sanitização */
-function NumericInput({
+/* Campo numérico fixo (linha única) */
+function FixedInput({
+  label,
   value,
-  onChangeText,
-  placeholder,
+  onChange,
   allowNegative,
 }: {
+  label: string;
   value: string;
-  onChangeText: (v: string) => void;
-  placeholder?: string;
+  onChange: (v: string) => void;
   allowNegative?: boolean;
 }) {
   return (
-    <TextInput
-      style={S.input}
-      keyboardType="numeric"
-      inputMode="decimal"
-      placeholder={placeholder}
-      value={value}
-      onChangeText={(t) => onChangeText(sanitizeNumText(t, allowNegative))}
-    />
+    <View style={{ marginBottom: 10 }}>
+      <Text style={S.label}>{label}</Text>
+      <TextInput
+        value={value}
+        onChangeText={(t) => {
+          const ok = allowNegative ? /^-?\d*[.,]?\d*$/.test(t) : /^\d*[.,]?\d*$/.test(t);
+          if (!ok) return;
+          onChange(t);
+        }}
+        keyboardType="numeric"
+        inputMode="decimal"
+        placeholder="0,00"
+        style={S.input}
+      />
+    </View>
   );
 }
 
+/* Item container com botão remover no canto superior direito */
+function ItemCard({ children }: { children: React.ReactNode }) {
+  return <View style={{ marginBottom: 8 }}>{children}</View>;
+}
 
-/** Nome + Valor
- * - Nome é TEXTO livre (Pix/Outros)
- * - Valor é NUMÉRICO (sanitize)
- */
-function NameValueGroup({
-  title, items, setItems, forceNumericValue,
+/* Lista dinâmica de números (ex.: Dinheiro, Retirada, Raspinha Saída) */
+function DynamicNumbers({
+  items,
+  onChange,
 }: {
-  title: string;
-  items: NameValue[];
-  setItems: React.Dispatch<React.SetStateAction<NameValue[]>>;
-  forceNumericValue?: boolean; // quando true, valor passa por sanitização numérica
+  items: string[];
+  onChange: (next: string[]) => void;
 }) {
   return (
-    <View style={S.groupCard}>
-      <View style={S.groupHeader}>
-        <Text style={S.groupTitle}>{title}</Text>
-        <View style={S.groupBtns}>
-          <Pressable style={S.smallBtn} onPress={() => setItems((p) => (p.length > 1 ? p.slice(0, -1) : p))}>
-            <Ionicons name="remove-circle" size={20} color={C.accent} />
-          </Pressable>
-          <Pressable style={S.smallBtn} onPress={() => setItems((p) => [...p, { nome: "", valor: "" }])}>
-            <Ionicons name="add-circle" size={20} color={C.accent} />
-          </Pressable>
-        </View>
-      </View>
+    <View style={{ gap: 8 }}>
+      {items.map((v, i) => (
+        <ItemCard key={i}>
+          <TextInput
+            value={v}
+            onChangeText={(t) => {
+              if (!/^-?\d*[.,]?\d*$/.test(t)) return;
+              const next = [...items];
+              next[i] = t;
+              onChange(next);
+            }}
+            keyboardType="numeric"
+            inputMode="decimal"
+            placeholder="0,00"
+            style={S.input}
+          />
+        </ItemCard>
+      ))}
+    </View>
+  );
+}
 
+function DynamicNameValFree({
+  items,
+  onChange,
+  placeholderNome,
+  placeholderValor,
+}: {
+  items: { nome: string; valor: string }[];
+  onChange: (next: { nome: string; valor: string }[]) => void;
+  placeholderNome: string;
+  placeholderValor: string;
+}) {
+  return (
+    <View style={{ gap: 8 }}>
       {items.map((it, i) => (
-        <View key={i} style={S.row2}>
-          <View style={S.col}>
-            <TextInput
-              style={S.input}
-              placeholder="Nome"
-              value={it.nome}
-              onChangeText={(t) => setItems((p) => p.map((x, idx) => (idx === i ? { ...x, nome: t } : x)))}
-            />
+        <ItemCard key={i}>
+          <View style={S.inlineRow}>
+            <View style={{ flex: 1 }}>
+              <TextInput
+                value={it.nome}
+                onChangeText={(nome) => {
+                  const next = [...items];
+                  next[i] = { ...next[i], nome };
+                  onChange(next);
+                }}
+                placeholder={placeholderNome}
+                style={S.input}
+              />
+            </View>
+            <View style={{ width: 120 }}>
+              <TextInput
+                value={it.valor}
+                onChangeText={(valor) => {
+                  if (!/^\d*[.,]?\d*$/.test(valor)) return;
+                  const next = [...items];
+                  next[i] = { ...next[i], valor };
+                  onChange(next);
+                }}
+                keyboardType="numeric"
+                inputMode="decimal"
+                placeholder={placeholderValor}
+                style={S.input}
+              />
+            </View>
           </View>
-          <View style={S.colLast}>
-            <TextInput
-              style={S.input}
-              keyboardType="numeric"
-              inputMode="decimal"
-              placeholder="Valor"
-              value={it.valor}
-              onChangeText={(t) =>
-                setItems((p) =>
-                  p.map((x, idx) =>
-                    idx === i ? { ...x, valor: forceNumericValue ? sanitizeNumText(t) : t }
-                                 : x
-                  )
-                )
-              }
-            />
+        </ItemCard>
+      ))}
+    </View>
+  );
+}
+
+function DynamicNameValWithPicker({
+  items,
+  onChange,
+  placeholderValor,
+}: {
+  items: { nome: string; valor: string }[];
+  onChange: (next: { nome: string; valor: string }[]) => void;
+  placeholderValor: string;
+}) {
+  return (
+    <View style={{ gap: 8 }}>
+      {items.map((it, i) => (
+        <View key={i} style={{ marginBottom: 8 }}>
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",          // centraliza verticalmente
+              justifyContent: "space-between",
+              gap: 10,
+            }}
+          >
+            {/* Coluna do SelectCliente */}
+            <View style={{ width: "48%", alignItems: "stretch" }}>
+              <SelectCliente
+                value={it.nome}
+                onChange={(nome) => {
+                  const next = [...items];
+                  next[i] = { ...next[i], nome };
+                  onChange(next);
+                }}
+                inputStyle={{ height: 44 }}   // força mesma “altura de input”
+              />
+            </View>
+
+            {/* Coluna do Valor */}
+            <View style={{ width: "48%", alignItems: "stretch" }}>
+              <TextInput
+                value={it.valor}
+                onChangeText={(valor) => {
+                  if (!/^\d*[.,]?\d*$/.test(valor)) return;
+                  const next = [...items];
+                  next[i] = { ...next[i], valor };
+                  onChange(next);
+                }}
+                keyboardType="numeric"
+                inputMode="decimal"
+                placeholder={placeholderValor}
+                style={S.input}
+              />
+            </View>
           </View>
         </View>
       ))}
     </View>
   );
 }
-
-/** Nome (seletor de clientes) + Valor numérico — para Recebimento e Fiado */
-function ClientValueGroup({
-  title, items, setItems, onPick, kind,
+/* Raspinhas de ENTRADA – 2,50 / 5,00 / 10,00 / 20,00 (com + - e input de quantidade) */
+function RaspinhasEntrada({
+  qtds,
+  onChange,
 }: {
-  title: string;
-  items: NameValue[];
-  setItems: React.Dispatch<React.SetStateAction<NameValue[]>>;
-  onPick: (kind: "receb" | "fiado", index: number) => void;
-  kind: "receb" | "fiado";
+  qtds: StateShape["entradaDenomQtds"];
+  onChange: (qtds: StateShape["entradaDenomQtds"]) => void;
 }) {
-  return (
-    <View style={S.groupCard}>
-      <View style={S.groupHeader}>
-        <Text style={S.groupTitle}>{title}</Text>
-        <View style={S.groupBtns}>
-          <Pressable style={S.smallBtn} onPress={() => setItems((p) => (p.length > 1 ? p.slice(0, -1) : p))}>
-            <Ionicons name="remove-circle" size={20} color={C.accent} />
-          </Pressable>
-          <Pressable style={S.smallBtn} onPress={() => setItems((p) => [...p, { nome: "", valor: "" }])}>
-            <Ionicons name="add-circle" size={20} color={C.accent} />
-          </Pressable>
-        </View>
-      </View>
+  const DENOMS: { label: string; key: "2.50" | "5.00" | "10.00" | "20.00"; mult: number }[] = [
+    { label: "2,50", key: "2.50", mult: 2.5 },
+    { label: "5,00", key: "5.00", mult: 5 },
+    { label: "10,00", key: "10.00", mult: 10 },
+    { label: "20,00", key: "20.00", mult: 20 },
+  ];
 
-      {items.map((it, i) => (
-        <View key={i} style={S.row2}>
-          <View style={S.col}>
-            {/* Nome não digitável: abre seletor */}
-            <Pressable style={S.nameBox} onPress={() => onPick(kind, i)}>
-              {it.nome ? (
-                <Text style={S.nameBoxText}>{it.nome}</Text>
-              ) : (
-                <Text style={S.nameBoxPlaceholder}>Selecionar cliente…</Text>
-              )}
-            </Pressable>
+  const setQtd = (k: typeof DENOMS[number]["key"], q: string) =>
+    onChange({ ...qtds, [k]: q });
+
+  const inc = (k: typeof DENOMS[number]["key"]) =>
+    onChange({ ...qtds, [k]: String((toNumber(qtds[k]) || 0) + 1) });
+
+  const dec = (k: typeof DENOMS[number]["key"]) =>
+    onChange({ ...qtds, [k]: String(Math.max(0, (toNumber(qtds[k]) || 0) - 1)) });
+
+  return (
+    <View style={{ gap: 8 }}>
+      {DENOMS.map((d) => {
+        const q = String(qtds[d.key] ?? "0");
+        const total = toNumber(q) * d.mult;
+
+        return (
+          <View key={d.key} style={S.raspRow}>
+            <Text style={S.raspLabel}>{d.label}</Text>
+
+            <View style={S.raspControls}>
+              <Pressable onPress={() => dec(d.key)} style={S.iconBtnSmall}>
+                <Text style={{ fontSize: 16, fontWeight: "900", color: "#655ad8" }}>－</Text>
+              </Pressable>
+
+              <TextInput
+                value={q}
+                onChangeText={(t) => {
+                  if (!/^\d*$/.test(t)) return;
+                  setQtd(d.key, t);
+                }}
+                keyboardType="numeric"
+                inputMode="numeric"
+                style={[S.input, { width: 80, textAlign: "center" }]}
+              />
+
+              <Pressable onPress={() => inc(d.key)} style={S.iconBtnSmall}>
+                <Text style={{ fontSize: 16, fontWeight: "900", color: "#655ad8" }}>＋</Text>
+              </Pressable>
+            </View>
+
+            <Text style={S.raspTotal}>{currency(total)}</Text>
           </View>
-          <View style={S.colLast}>
-            <TextInput
-              style={S.input}
-              keyboardType="numeric"
-              inputMode="decimal"
-              placeholder="Valor"
-              value={it.valor}
-              onChangeText={(t) => setItems((p) => p.map((x, idx) => (idx === i ? { ...x, valor: sanitizeNumText(t) } : x)))}
-            />
-          </View>
-        </View>
-      ))}
+        );
+      })}
     </View>
   );
 }
 
+/************
+ * ESTILOS LOCAIS
+ ************/
+const S = {
+  safe: {
+    flex: 1,
+    backgroundColor: "#ffdbd7",           // <— fundo
+  },
+  container: {
+    padding: 16,
+    gap: 14,
+  } as any,
+  titulo: {
+    fontSize: 20,
+    fontWeight: "900",
+    color: "#832d69",                      // <— texto principal
+  } as any,
+  greeting: {
+    color: "#832d69",
+    marginTop: 4,
+    marginBottom: 8,
+  } as any,
+
+  tabs: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 4,
+  } as any,
+  tabBtn: {
+    flex: 1,
+    height: 40,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: "#dd9aba",                // <— borda da aba
+    backgroundColor: "#ffffff",
+    alignItems: "center",
+    justifyContent: "center",
+  } as any,
+   tabBtnActive: { backgroundColor: "#dd9aba" } as any,
+   tabTxt: { fontWeight: "800", color: "#dd9aba" } as any,
+  tabTxtActive: { color: "#fff" } as any,
+
+  cardForm: {
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    padding: 14,
+    shadowColor: "#000",
+    shadowOpacity: 0.08,
+    shadowOffset: { width: 0, height: 3 },
+    shadowRadius: 6,
+    elevation: 3,
+  } as any,
+  cardResumo: {
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    padding: 14,
+    shadowColor: "#000",
+    shadowOpacity: 0.12,
+    shadowOffset: { width: 0, height: 6 },
+    shadowRadius: 12,
+    elevation: 4,
+  } as any,
+  cardTitle: { fontWeight: "900", color: "#333", marginBottom: 8 } as any,
+
+  sectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  } as any,
+  sectionTitle: {
+    fontWeight: "900",
+    color: "#dd9aba",                      // <— títulos
+    marginBottom: 8,
+    fontSize: 16,
+  } as any,
+
+  label: {
+    fontWeight: "800",
+    color: "#dd9aba",                      // <— títulos dos campos fixos
+    marginBottom: 6,
+  } as any,
+
+input: {
+  width: "100%",
+  backgroundColor: "#fff",
+  borderRadius: 10,
+  borderWidth: 1,
+  borderColor: "#dd9aba",
+  paddingHorizontal: 12,
+  paddingVertical: 10,
+  height: 44,            // ⬅️ altura fixa p/ bater com o SelectCliente
+  color: "#832d69",
+  fontWeight: "700",
+} as any,
+
+  row: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
+  } as any,
+   rowLabel: { color: "#832d69" },
+  rowVal:   { color: "#832d69", fontWeight: "800" } as any,
+
+  actions: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 10,
+    marginBottom: 20,
+  } as any,
+  
+  actionBtn: {
+    flex: 1,
+    height: 44,
+    backgroundColor: "#fff",
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: "#dd9aba",                // <— borda botão
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",                  // <— para ícone + texto
+    gap: 8,
+  } as any,
+  actionTxt: { color: "#dd9aba", fontWeight: "900" } as any,
+  shadow: {
+    shadowColor: "#000",
+    shadowOpacity: 0.12,
+    shadowOffset: { width: 0, height: 6 },
+    shadowRadius: 12,
+    elevation: 4,
+  } as any,
+
+  // Raspinha entrada: linha “grudadinha”, + e - na mesma linha
+  raspRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  } as any,
+  raspLabel: { width: 64, fontWeight: "900", color: "#dd9aba", textAlign: "left" } as any,
+  raspControls: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    flex: 1,
+  } as any,
+  raspTotal: {
+    width: 120,
+    textAlign: "right",
+    fontWeight: "900",
+    color: "#832d69",
+  } as any,
+iconBtnSmall: {
+  width: 34,
+  height: 34,
+  borderRadius: 17,          // redondinho
+  backgroundColor: "#fff",   // fundo branco
+  borderWidth: 2,
+  borderColor: "#dd9aba",    // rosa borda
+  alignItems: "center",
+  justifyContent: "center",
+  shadowColor: "#000",       // sombra fofinha
+  shadowOffset: { width: 0, height: 2 },
+  shadowOpacity: 0.15,
+  shadowRadius: 3,
+  elevation: 3,              // sombra no Android
+} as any,
+
+  itemCard: {
+    borderWidth: 1,
+    borderColor: "#e7e8ec",
+    borderRadius: 10,
+    padding: 10,
+    backgroundColor: "#fff",
+    position: "relative",
+  } as any,
+  itemRemoveBtn: {
+    position: "absolute",
+    top: 6,
+    right: 6,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: "#dd9aba",                // <— borda do “–”
+    backgroundColor: "#fff",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 2,
+  
+  } as any,
+
+  inlineRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 8,
+  } as any,
+};
