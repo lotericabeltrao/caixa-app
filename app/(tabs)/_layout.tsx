@@ -23,6 +23,18 @@ export default function TabsLayout() {
           ),
         }}
       />
+      
+<Tabs.Screen
+        name="malotes"
+        options={{
+          title: "Malotes",
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="briefcase-outline" size={size ?? 22} color={color} />
+          ),
+        }}
+      />
+
+
       <Tabs.Screen
         name="analise"   // <-- TEM que existir app/(tabs)/analise.tsx com export default
         options={{
@@ -33,5 +45,6 @@ export default function TabsLayout() {
         }}
       />
     </Tabs>
+    
   );
 }

@@ -302,7 +302,7 @@ const totals = useMemo(() => {
 
         {/* CARD DO RESUMO */}
         <View style={S.cardResumo}>
-          <Text style={S.cardTitle}>Resumo</Text>
+          <Text style={S.cardTitle} >Resumo</Text>
           <Row label="Total de Entrada" value={currency(totals.entrada)} />
           <Row label="Total de Saída" value={currency(totals.saida)} />
           <Row label="Resultado" value={currency(totals.resultado)} strong />
@@ -351,17 +351,45 @@ const totals = useMemo(() => {
         </Section>
 
         {/* Fixos na ordem desejada, exceto Em caixa que ficará por último */}
-        {ENTRADA_FIXOS_BASE.map((k) => (
-          <FixedInput
-            key={k}
-            label={k}
-            value={state.entradaFixos[k] ?? ""}
-            onChange={(v) =>
-              setState((p) => ({ ...p, entradaFixos: { ...p.entradaFixos, [k]: v } }))
-            }
-          />
-        ))}
-
+     {["Moeda", "Tarifa", "Bolão", "Telesena"].map((k) => (
+        <FixedInput
+          key={k}
+          label={k}
+          value={state.entradaFixos[k] ?? ""}
+          onChange={(v) =>
+            setState((p) => ({
+              ...p,
+              entradaFixos: { ...p.entradaFixos, [k]: v },
+            }))
+          }
+        />
+      ))}
+{/* Mkt (dinâmico) */}
+      <Section
+        title="Mkt"
+        onAdd={() =>
+          setState((p) => ({
+            ...p,
+            entradaMkt: [...p.entradaMkt, ""],
+          }))
+        }
+        onRemoveLast={() =>
+          setState((p) => ({
+            ...p,
+            entradaMkt:
+              p.entradaMkt.length > 1
+                ? p.entradaMkt.slice(0, -1)
+                : p.entradaMkt,
+          }))
+        }
+      >
+        <DynamicNumbers
+          items={state.entradaMkt}
+          onChange={(items) =>
+            setState((p) => ({ ...p, entradaMkt: items }))
+          }
+        />
+      </Section>
         {/* Recebimento (dinâmico com SelectCliente) */}
         <Section
           title="Recebimento"
@@ -371,6 +399,8 @@ const totals = useMemo(() => {
     entradaRecebimentos: p.entradaRecebimentos.length > 1 ? p.entradaRecebimentos.slice(0, -1) : p.entradaRecebimentos
   }))}
 >
+   
+    
           <DynamicNameValWithPicker
     items={state.entradaRecebimentos}
     onChange={(items) => setState(p => ({ ...p, entradaRecebimentos: items }))}
@@ -385,7 +415,7 @@ const totals = useMemo(() => {
             onChange={(qtds) => setState((p) => ({ ...p, entradaDenomQtds: qtds }))}
           />
           <View style={{ marginTop: 8, alignItems: "flex-end" }}>
-            <Text style={{ fontWeight: "800", color: "#333" }}>
+            <Text style={{ fontWeight: "800", color: "#832d69ff" }}>
               Total Raspinha: {currency(raspEntradaTotal)}
             </Text>
           </View>
@@ -524,13 +554,13 @@ function Section({
         <Text style={S.sectionTitle}>{title}</Text>
         <View style={{ flexDirection: "row", gap: 8 }}>
           {onRemoveLast ? (
-            <Pressable onPress={onRemoveLast} style={{padding: 4}} ><MaterialCommunityIcons name="minus-circle-outline" size={22} color="#dd9aba" />
+            <Pressable onPress={onRemoveLast} style={{padding: 4}} ><MaterialCommunityIcons name="heart-minus" size={22} color="#dd9aba" />
           
             </Pressable>
           ) : null}
           {onAdd ? (
             <Pressable onPress={onAdd} style={{padding: 4}}>
-              <MaterialCommunityIcons name="plus-circle-outline" size={22} color="#dd9aba" />
+              <MaterialCommunityIcons name="heart-plus" size={22} color="#dd9aba" />
             </Pressable>
           ) : null}
         </View>
@@ -756,8 +786,8 @@ function RaspinhasEntrada({
             <Text style={S.raspLabel}>{d.label}</Text>
 
             <View style={S.raspControls}>
-              <Pressable onPress={() => dec(d.key)} style={S.iconBtnSmall}>
-                <Text style={{ fontSize: 16, fontWeight: "900", color: "#655ad8" }}>－</Text>
+              <Pressable onPress={() => dec(d.key)}>
+                <MaterialCommunityIcons name="heart-minus" size={22} color="#dd9aba" />
               </Pressable>
 
               <TextInput
@@ -771,8 +801,8 @@ function RaspinhasEntrada({
                 style={[S.input, { width: 80, textAlign: "center" }]}
               />
 
-              <Pressable onPress={() => inc(d.key)} style={S.iconBtnSmall}>
-                <Text style={{ fontSize: 16, fontWeight: "900", color: "#655ad8" }}>＋</Text>
+              <Pressable onPress={() => inc(d.key)}>
+                <MaterialCommunityIcons name="heart-plus" size={22} color="#dd9aba" />
               </Pressable>
             </View>
 
@@ -846,7 +876,7 @@ const S = {
     shadowRadius: 12,
     elevation: 4,
   } as any,
-  cardTitle: { fontWeight: "900", color: "#333", marginBottom: 8 } as any,
+  cardTitle: { fontWeight: "900", color: "#832d69ff", marginBottom: 8 } as any,
 
   sectionHeader: {
     flexDirection: "row",

@@ -1,19 +1,27 @@
+// app/(tabs)/analise.tsx (ou o nome da sua tela de Análise)
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import React, { useEffect, useMemo, useState } from "react";
 import {
-    Platform,
-    Pressable,
-    SafeAreaView,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    View,
+  Platform,
+  Pressable,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from "react-native";
 
-const APPSCRIPT_URL = "https://script.google.com/macros/s/AKfycbxNG2qw7WJ5UxtLfA681FfAy4zk6mg4zrZOMWx15qUPQRvjHG1haZW2KyWCI756iyn-/exec";
+const APPSCRIPT_URL =
+  "https://script.google.com/macros/s/AKfycbxNG2qw7WJ5UxtLfA681FfAy4zk6mg4zrZOMWx15qUPQRvjHG1haZW2KyWCI756iyn-/exec";
 
-const C = { bg: "#ffdbd7", accent: "#dd9abaff", textDark: "#832d69ff", white: "#ffffff", border: "#dd9abaff" };
+const C = {
+  bg: "#ffdbd7",
+  accent: "#dd9abaff",
+  textDark: "#832d69ff",
+  white: "#ffffff",
+  border: "#dd9abaff",
+};
 
 const S = StyleSheet.create({
   safe: { flex: 1, backgroundColor: C.bg },
@@ -29,8 +37,10 @@ const S = StyleSheet.create({
     borderWidth: 2,
     borderColor: C.border,
     borderRadius: 10,
-    backgroundColor: C.white, // branco mesmo inativa
-    ...(Platform.OS === "web" ? { boxShadow: "0 3px 8px rgba(0,0,0,0.06)" as any } : { elevation: 2 }),
+    backgroundColor: C.white,
+    ...(Platform.OS === "web"
+      ? ({ boxShadow: "0 3px 8px rgba(0,0,0,0.06)" } as any)
+      : { elevation: 2 }),
   },
   tabBtnActive: { backgroundColor: C.accent },
   tabText: { color: C.accent, fontWeight: "900" },
@@ -42,7 +52,7 @@ const S = StyleSheet.create({
     padding: 12,
     marginBottom: 12,
     ...(Platform.OS === "web"
-      ? { boxShadow: "0 4px 10px rgba(0,0,0,0.08)" as any }
+      ? ({ boxShadow: "0 4px 10px rgba(0,0,0,0.08)" } as any)
       : { elevation: 3 }),
   },
 
@@ -59,22 +69,41 @@ const S = StyleSheet.create({
     fontWeight: "700",
   },
 
-  row: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: "#eee" },
+  row: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
+  },
   rowLabel: { color: C.textDark, fontWeight: "800" },
   rowValue: { color: C.textDark, fontWeight: "900" },
+
+  grid2: { flexDirection: "row", gap: 8 },
+  col: { flex: 1 },
 });
 
-type DashboardData = {
-  month: string;
-  comissaoRaspinha: number;
-  comissaoTarifa: number;
-  totalEntrada: number;
-  totalSaida: number;
-  totalResultado: number;
-  clientesFiado?: { nome: string; total: number }[];
+type PainelItem = {
+  nome: string;
+  tarifa: number;
+  raspinha: number;
+  comissao: number;
+  balanco: number;
+};
+type PainelResp = {
+  ok: boolean;
+  period?: { month: string; inicio?: string; fim?: string };
+  items?: PainelItem[];
 };
 
-const currency = (n: number) => (n || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+type FiadoItem = { nome: string; total: number };
+type FiadoResp = { ok: boolean; items?: FiadoItem[] };
+
+const currency = (n: number) =>
+  (Number.isFinite(n) ? n : 0).toLocaleString("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  });
 
 function thisMonthKey() {
   const d = new Date();
@@ -86,11 +115,17 @@ function thisMonthKey() {
 export default function AnaliseScreen() {
   const [tab, setTab] = useState<"fiado" | "resumo">("fiado");
   const [userInfo, setUserInfo] = useState<{ nome?: string } | null>(null);
-
+ const [loading, setLoading] = useState(false);
   const [month, setMonth] = useState(thisMonthKey());
-  const [data, setData] = useState<DashboardData | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  // painel_cells (comissão/balanço)
+  const [painel, setPainel] = useState<PainelItem[] | null>(null);
+
+  // fiado_list (nome + total)
+  const [fiado, setFiado] = useState<FiadoItem[]>([]);
   const [search, setSearch] = useState("");
 
+  // carrega usuário (só para título/saudação se quiser)
   useEffect(() => {
     (async () => {
       try {
@@ -100,27 +135,53 @@ export default function AnaliseScreen() {
     })();
   }, []);
 
+  // busca painel (fixo por mês)
   useEffect(() => {
     (async () => {
       try {
-        const url = `${APPSCRIPT_URL}?view=dashboard&month=${encodeURIComponent(month)}`;
+        const url = `${APPSCRIPT_URL}?view=painel_cells&month=${encodeURIComponent(
+          month
+        )}`;
         const res = await fetch(url);
-        const json = await res.json();
-        setData(json?.data || null);
+        const json: PainelResp = await res.json();
+        setPainel(json?.ok ? json.items || [] : []);
       } catch {
-        setData(null);
+        setPainel([]);
       }
     })();
   }, [month]);
 
-  const filteredFiado = useMemo(() => {
-    const list = data?.clientesFiado || [];
-    if (!search.trim()) return list;
-    const s = search.trim().toLowerCase();
-    return list.filter((c) => c.nome.toLowerCase().includes(s));
-  }, [data, search]);
+  // busca fiado (lista completa, sem filtro por mês porque vem de uma tabela agregada)
+  useEffect(() => {
+    (async () => {
+      try {
+        const url = `${APPSCRIPT_URL}?view=fiado_list`;
+        const res = await fetch(url);
+        const json: FiadoResp = await res.json();
+        setFiado(json?.ok ? json.items || [] : []);
+      } catch {
+        setFiado([]);
+      }
+    })();
+  }, []);
 
-  const comissaoTotal = (data?.comissaoRaspinha || 0) + (data?.comissaoTarifa || 0);
+  // seleciona a funcionária atual no painel (por nome)
+  const current = useMemo(() => {
+    if (!painel || painel.length === 0) return null;
+    const nome = (userInfo?.nome || "").trim().toLowerCase();
+    if (!nome) return null;
+    return painel.find((p) => p.nome.trim().toLowerCase() === nome) || null;
+  }, [painel, userInfo]);
+
+  const comissaoTarifa = current?.tarifa ?? 0;
+  const comissaoRaspinha = current?.raspinha ?? 0;
+  const comissaoTotal = (current?.comissao ?? 0) || comissaoTarifa + comissaoRaspinha;
+
+  const filteredFiado = useMemo(() => {
+    if (!search.trim()) return fiado;
+    const s = search.trim().toLowerCase();
+    return fiado.filter((c) => c.nome.toLowerCase().includes(s));
+  }, [fiado, search]);
 
   return (
     <SafeAreaView style={S.safe}>
@@ -129,90 +190,127 @@ export default function AnaliseScreen() {
 
         {/* Abas internas */}
         <View style={S.tabsRow}>
-          <Pressable style={[S.tabBtn, tab === "fiado" && S.tabBtnActive]} onPress={() => setTab("fiado")}>
-            <Text style={[S.tabText, tab === "fiado" && S.tabTextActive]}>Fiado</Text>
+          <Pressable
+            style={[S.tabBtn, tab === "fiado" && S.tabBtnActive]}
+            onPress={() => setTab("fiado")}
+          >
+            <Text style={[S.tabText, tab === "fiado" && S.tabTextActive]}>
+              Fiado
+            </Text>
           </Pressable>
-          <Pressable style={[S.tabBtn, tab === "resumo" && S.tabBtnActive]} onPress={() => setTab("resumo")}>
-            <Text style={[S.tabText, tab === "resumo" && S.tabTextActive]}>Resumo</Text>
+          <Pressable
+            style={[S.tabBtn, tab === "resumo" && S.tabBtnActive]}
+            onPress={() => setTab("resumo")}
+          >
+            <Text style={[S.tabText, tab === "resumo" && S.tabTextActive]}>
+              Resumo
+            </Text>
           </Pressable>
         </View>
 
-        {/* Filtro de mês */}
-        <View style={S.card}>
-          <Text style={S.label}>Mês (AAAA-MM)</Text>
-          <TextInput
-            style={S.input}
-            placeholder="2025-08"
-            value={month}
-            onChangeText={setMonth}
-            inputMode="numeric"
-          />
-        </View>
+        {/* Filtro de mês (para o painel) */}
+        {tab === "resumo" && (
+          <View style={S.card}>
+            <Text style={S.label}>Mês Atual</Text>
+          </View>
+        )}
+
+               {tab === "resumo" && (
+          <>
+            <View style={S.card}>
+              <Text style={S.label}>
+                Comissão {current?.nome ? `• ${current.nome} `: ""}
+              </Text>
+
+              {loading ? (
+                <Text style={{ color: C.textDark }}>Carregando…</Text>
+              ) : err ? (
+                <Text style={{ color: "crimson" }}>{err}</Text>
+              ) : !current ? (
+                <Text style={{ color: C.textDark }}>Sem dados.</Text>
+              ) : (
+                <>
+                  <View style={S.row}>
+                    <Text style={S.rowLabel}>Raspinha</Text>
+                    <Text style={S.rowValue}>{currency(current.raspinha)}</Text>
+                  </View>
+                  <View style={S.row}>
+                    <Text style={S.rowLabel}>Tarifa</Text>
+                    <Text style={S.rowValue}>{currency(current.tarifa)}</Text>
+                  </View>
+                  <View style={S.row}>
+                    <Text style={S.rowLabel}>Total</Text>
+                    <Text style={S.rowValue}>{currency(current.comissao)}</Text>
+                  </View>
+                </>
+              )}
+            </View>
+
+            <View style={S.card}>
+              <Text style={S.label}>
+                Balanço do mês {current?.nome ? `• ${current.nome} `: ""}
+              </Text>
+
+              {loading ? (
+                <Text style={{ color: C.textDark }}>Carregando…</Text>
+              ) : err ? (
+                <Text style={{ color: "crimson" }}>{err}</Text>
+              ) : !current ? (
+                <Text style={{ color: C.textDark }}>Sem dados.</Text>
+              ) : (
+                <View style={S.row}>
+                  <Text style={S.rowLabel}>Total</Text>
+                  <Text style={S.rowValue}>{currency(current.balanco)}</Text>
+                </View>
+              )}
+            </View>
+          </>
+        )}
+
+
+     
 
         {tab === "fiado" && (
           <View style={S.card}>
             <Text style={S.label}>Buscar cliente</Text>
             <TextInput
               style={S.input}
-              placeholder="Digite o nome…"
+              placeholder="Digite parte do nome…"
               value={search}
               onChangeText={setSearch}
             />
 
-            <View style={{ marginTop: 4 }}>
-              <View style={[S.row, { borderBottomColor: C.border }]}>
-                <Text style={[S.rowLabel, { color: C.accent }]}>Cliente</Text>
-                <Text style={[S.rowLabel, { color: C.accent }]}>Total</Text>
-              </View>
-
-              {(filteredFiado || []).map((c) => (
-                <View key={c.nome} style={S.row}>
-                  <Text style={S.rowLabel}>{c.nome}</Text>
-                  <Text style={S.rowValue}>{currency(c.total)}</Text>
-                </View>
-              ))}
-
-              {filteredFiado.length === 0 && (
-                <Text style={{ color: C.textDark, paddingVertical: 8 }}>Nenhum cliente encontrado.</Text>
-              )}
+            {/* Cabeçalho */}
+            <View style={[S.row, { borderBottomColor: C.border }]}>
+              <Text style={[S.rowLabel, { color: C.accent, flex: 1 }]}>
+                Nome
+              </Text>
+              <Text
+                style={[
+                  S.rowLabel,
+                  { color: C.accent, width: 120, textAlign: "right" },
+                ]}
+              >
+                Saldo
+              </Text>
             </View>
+
+            {/* Linhas */}
+            {(filteredFiado || []).map((c) => (
+              <View key={c.nome} style={S.row}>
+                <Text style={[S.rowLabel, { flex: 1 }]}>{c.nome}</Text>
+                <Text style={[S.rowValue, { width: 120, textAlign: "right" }]}>
+                  {currency(c.total)}
+                </Text>
+              </View>
+            ))}
+
+            {filteredFiado.length === 0 && (
+              <Text style={{ color: C.textDark, paddingVertical: 8 }}>
+                Nenhum cliente encontrado.
+              </Text>
+            )}
           </View>
-        )}
-
-        {tab === "resumo" && (
-          <>
-            <View style={S.card}>
-              <Text style={S.label}>Comissão</Text>
-              <View style={S.row}>
-                <Text style={S.rowLabel}>Raspinha</Text>
-                <Text style={S.rowValue}>{currency(data?.comissaoRaspinha || 0)}</Text>
-              </View>
-              <View style={S.row}>
-                <Text style={S.rowLabel}>Tarifa</Text>
-                <Text style={S.rowValue}>{currency(data?.comissaoTarifa || 0)}</Text>
-              </View>
-              <View style={S.row}>
-                <Text style={S.rowLabel}>Total</Text>
-                <Text style={S.rowValue}>{currency(comissaoTotal)}</Text>
-              </View>
-            </View>
-
-            <View style={S.card}>
-              <Text style={S.label}>Balanço do mês</Text>
-              <View style={S.row}>
-                <Text style={S.rowLabel}>Entrada</Text>
-                <Text style={S.rowValue}>{currency(data?.totalEntrada || 0)}</Text>
-              </View>
-              <View style={S.row}>
-                <Text style={S.rowLabel}>Saída</Text>
-                <Text style={S.rowValue}>{currency(data?.totalSaida || 0)}</Text>
-              </View>
-              <View style={S.row}>
-                <Text style={S.rowLabel}>Resultado</Text>
-                <Text style={S.rowValue}>{currency(data?.totalResultado || 0)}</Text>
-              </View>
-            </View>
-          </>
         )}
       </ScrollView>
     </SafeAreaView>

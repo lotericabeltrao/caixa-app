@@ -197,8 +197,8 @@ export const styles = StyleSheet.create({
   circleBtnText: { color: "#5D6BFF", fontSize: 18, fontWeight: "800", lineHeight: 18 },
 
   totalRow: { flexDirection: "row", justifyContent: "space-between", paddingVertical: 6 },
-  totalLabel: { color: "#6B7280", fontWeight: "700" },
-  totalValue: { color: "#111827", fontWeight: "800" },
+  totalLabel: { color: "#832d69ff", fontWeight: "700" },
+  totalValue: { color: "#832d69ff", fontWeight: "800" },
 });
 
 /* ===================== COMPONENTES BÁSICOS ===================== */
@@ -471,7 +471,7 @@ export function RaspinhaControl({
             ...getShadow(1),
           }}
         >
-          <Text style={{ color: "#374151", fontWeight: "700", minWidth: 46 }}>{d.label}</Text>
+          <Text style={{ color: "#832d69ff", fontWeight: "700", minWidth: 46 }}>{d.label}</Text>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
             <Pressable
               onPress={() =>
@@ -578,7 +578,7 @@ export function SelectNVList({
             }}
             style={[styles.input, { flex: 1, justifyContent: "center", paddingVertical: 14 }]}
           >
-            <Text style={{ color: it.nome ? "#1F2A37" : "#9CA3AF" }}>
+            <Text style={{ color: it.nome ? "#832d69ff" : "#832d69ff" }}>
               {it.nome || placeholder}
             </Text>
           </Pressable>
@@ -628,7 +628,7 @@ export function SelectNVList({
                 <Text
                   style={{
                     fontWeight: "800",
-                    color: "#111827",
+                    color: "#832d69ff",
                     fontSize: 16,
                     marginBottom: 8,
                   }}
@@ -662,11 +662,11 @@ export function SelectNVList({
                         borderRadius: 12,
                       }}
                     >
-                      <Text style={{ fontWeight: "700", color: "#111827" }}>{c.nome}</Text>
+                      <Text style={{ fontWeight: "700", color: "#832d69ff" }}>{c.nome}</Text>
                     </Pressable>
                   ))}
                   {!filtered.length && (
-                    <Text style={{ color: "#6B7280", padding: 10 }}>Nenhum encontrado</Text>
+                    <Text style={{ color: "#832d69ff", padding: 10 }}>Nenhum encontrado</Text>
                   )}
                 </ScrollView>
 
